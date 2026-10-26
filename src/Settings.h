@@ -20,6 +20,7 @@ struct Scheme
     bool playingBold = true;
     QColor queued;
     QColor shuffled;
+    QColor radio;
     QString fontName;
     int fontSize = 0; // 0: application default
 

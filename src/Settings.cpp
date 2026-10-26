@@ -35,6 +35,7 @@ Scheme Scheme::systemScheme()
     // Billy's classic accents for queued and already shuffled items.
     s.queued = QColor(0x00, 0x80, 0x00);
     s.shuffled = p.color(QPalette::Disabled, QPalette::Text);
+    s.radio = p.color(QPalette::Link);
     return s;
 }
 
@@ -55,6 +56,7 @@ Scheme Scheme::load(const QString &file)
     s.playingBold = ini.value(QStringLiteral("playingitem_bold"), true).toBool();
     s.queued = readColor(ini, "queueditem_color", s.queued);
     s.shuffled = readColor(ini, "shuffleditem_color", s.shuffled);
+    s.radio = readColor(ini, "urlitem_color", s.radio);
     s.fontName = ini.value(QStringLiteral("font_name")).toString();
     s.fontSize = ini.value(QStringLiteral("font_size"), 0).toInt();
     return s;
@@ -74,6 +76,7 @@ bool Scheme::save(const QString &file) const
     ini.setValue(QStringLiteral("playingitem_bold"), playingBold);
     ini.setValue(QStringLiteral("queueditem_color"), queued.name());
     ini.setValue(QStringLiteral("shuffleditem_color"), shuffled.name());
+    ini.setValue(QStringLiteral("urlitem_color"), radio.name());
     ini.setValue(QStringLiteral("font_name"), fontName);
     ini.setValue(QStringLiteral("font_size"), fontSize);
     ini.endGroup();
@@ -103,6 +106,7 @@ QColor Scheme::color(int item) const
     case 6: return playingSelected;
     case 8: return queued;
     case 9: return shuffled;
+    case 10: return radio;
     default: return {};
     }
 }
@@ -119,6 +123,7 @@ void Scheme::setColor(int item, const QColor &c)
     case 6: playingSelected = c; break;
     case 8: queued = c; break;
     case 9: shuffled = c; break;
+    case 10: radio = c; break;
     default: break;
     }
     systemDefault = false;
@@ -137,6 +142,7 @@ QStringList Settings::schemeItemNames()
         QObject::tr("Playing item bold"),
         QObject::tr("Queued item color"),
         QObject::tr("Shuffled item color"),
+        QObject::tr("Radio item color"),
     };
 }
 

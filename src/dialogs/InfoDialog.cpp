@@ -43,6 +43,7 @@ QString InfoDialog::shortcutsText()
         "  Open folder                     F4, Numpad *\n"
         "  Add folder                      F3, Numpad /\n"
         "  Add file(s)                     Ctrl+L\n"
+        "  Add internet radio URL          Ctrl+R\n"
         "  Open playlist                   Ctrl+O\n"
         "  Save playlist                   Ctrl+S\n"
         "  Clear list                      Ctrl+N\n"
@@ -103,6 +104,7 @@ QString InfoDialog::aboutHtml()
               "Level meters algorithm &amp; calibration: Gert-Jan Wiersema<br>"
               "Support &amp; code portions: Laurenz van Gaalen</p>"
               "<p><b>This version uses</b><br>"
-              "Qt %2, libmpg123 (gapless MPEG decoding), libsndfile (WAV, FLAC, Ogg Vorbis, Opus)</p>")
+              "Qt %2 and FFmpeg (libavformat, libavcodec, libswresample) for decoding, "
+              "resampling and internet radio</p>")
         .arg(QStringLiteral(BILLY_VERSION), QString::fromLatin1(qVersion()));
 }

@@ -14,8 +14,7 @@ include(GNUInstallDirs)
 find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia Network)
 find_package(Qt6 QUIET COMPONENTS DBus)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(MPG123 REQUIRED IMPORTED_TARGET libmpg123)
-pkg_check_modules(SNDFILE REQUIRED IMPORTED_TARGET sndfile)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswresample)
 
 set(BILLY_SOURCES
   src/main.cpp
@@ -50,7 +49,7 @@ target_include_directories(billy PRIVATE src)
 target_compile_definitions(billy PRIVATE BILLY_VERSION="${PROJECT_VERSION}")
 target_link_libraries(billy PRIVATE
   Qt6::Widgets Qt6::Multimedia Qt6::Network
-  PkgConfig::MPG123 PkgConfig::SNDFILE)
+  PkgConfig::FFMPEG)
 
 if(Qt6DBus_FOUND)
   target_link_libraries(billy PRIVATE Qt6::DBus)

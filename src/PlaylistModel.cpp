@@ -49,6 +49,8 @@ QVariant PlaylistModel::data(const QModelIndex &index, int role) const
         return m_mode == PlayMode::Shuffle && m_shuffled.contains(e.id);
     case PlayingRole:
         return e.id == m_currentId;
+    case IsUrlRole:
+        return isUrl(e.path);
     default:
         return {};
     }
@@ -201,7 +203,7 @@ int PlaylistModel::addPaths(const QStringList &paths, int row)
     QVector<Entry> added;
     added.reserve(paths.size());
     for (const QString &p : paths)
-        added.push_back({++m_lastId, p});
+        added.push_back({++m_lastId, p, QString()});
     m_entries.insert(row, paths.size(), Entry());
     std::copy(added.begin(), added.end(), m_entries.begin() + row);
     m_indexDirty = true;
@@ -306,6 +308,49 @@ void PlaylistModel::setPathAt(int row, const QString &path)
     emit dataChanged(i, i);
 }
 
+bool PlaylistModel::isUrl(const QString &path)
+{
+    return Decoder::isUrl(path);
+}
+
+void PlaylistModel::setTitle(quint64 id, const QString &title)
+{
+    const int row = rowOf(id);
+    if (row < 0 || m_entries.at(row).title == title)
+        return;
+    m_entries[row].title = title;
+    const QModelIndex i = index(row);
+    emit dataChanged(i, i);
+}
+
+QString PlaylistModel::titleOf(quint64 id) const
+{
+    const int row = rowOf(id);
+    return row >= 0 ? m_entries.at(row).title : QString();
+}
+
+QHash<QString, QString> PlaylistModel::titles() const
+{
+    QHash<QString, QString> result;
+    for (const Entry &e : m_entries)
+        if (!e.title.isEmpty())
+            result.insert(e.path, e.title);
+    return result;
+}
+
+void PlaylistModel::applyTitles(const QHash<QString, QString> &titles)
+{
+    if (titles.isEmpty())
+        return;
+    for (Entry &e : m_entries) {
+        const auto it = titles.constFind(e.path);
+        if (it != titles.constEnd())
+            e.title = it.value();
+    }
+    if (!m_entries.isEmpty())
+        emit dataChanged(index(0), index(m_entries.size() - 1), {Qt::DisplayRole});
+}
+
 void PlaylistModel::crop(const QList<int> &rows)
 {
     QSet<int> keep;
@@ -322,7 +367,7 @@ int PlaylistModel::removeMissing()
 {
     QList<int> remove;
     for (int r = 0; r < m_entries.size(); ++r)
-        if (!QFileInfo::exists(m_entries.at(r).path))
+        if (!isUrl(m_entries.at(r).path) && !QFileInfo::exists(m_entries.at(r).path))
             remove << r;
     removeRowList(remove);
     return remove.size();
@@ -333,7 +378,8 @@ int PlaylistModel::removeDuplicates()
     QSet<QString> seen;
     QList<int> remove;
     for (int r = 0; r < m_entries.size(); ++r) {
-        const QString key = QFileInfo(m_entries.at(r).path).absoluteFilePath();
+        const QString &path = m_entries.at(r).path;
+        const QString key = isUrl(path) ? path : QFileInfo(path).absoluteFilePath();
         if (seen.contains(key))
             remove << r;
         else
@@ -379,11 +425,15 @@ void PlaylistModel::setViewFormat(ViewFormat format, const QStringList &musicFol
 
 QString PlaylistModel::displayText(int row) const
 {
+    if (row >= 0 && row < m_entries.size() && !m_entries.at(row).title.isEmpty())
+        return m_entries.at(row).title;
     return displayTextForPath(pathAt(row));
 }
 
 QString PlaylistModel::displayTextForPath(const QString &path) const
 {
+    if (isUrl(path))
+        return path;
     switch (m_viewFormat) {
     case ViewFormat::FullPath:
         return path;
@@ -561,7 +611,7 @@ void PlaylistModel::enqueue(quint64 id)
 
 // ------------------------------------------------------------------ files
 
-QStringList PlaylistModel::readPlaylistFile(const QString &file)
+QStringList PlaylistModel::readPlaylistFile(const QString &file, QHash<QString, QString> *titles)
 {
     QFile f(file);
     if (!f.open(QIODevice::ReadOnly))
@@ -571,59 +621,104 @@ QStringList PlaylistModel::readPlaylistFile(const QString &file)
     QString text = toUtf16(raw);
     if (toUtf16.hasError())
         text = QString::fromLatin1(raw); // old Windows playlists
-    const QDir base = QFileInfo(file).absoluteDir();
-    const bool pls = file.endsWith(QLatin1String(".pls"), Qt::CaseInsensitive);
+    return parsePlaylist(text, QFileInfo(file).absolutePath(),
+                         file.endsWith(QLatin1String(".pls"), Qt::CaseInsensitive), titles);
+}
 
+QStringList PlaylistModel::parsePlaylist(const QString &text, const QString &baseDir, bool pls,
+                                         QHash<QString, QString> *titles)
+{
+    const QDir base(baseDir);
     QStringList result;
+    QString pendingTitle;               // from #EXTINF, for the next entry
+    QHash<QString, QString> plsTitles;  // "3" -> title, from TitleN=
+    QHash<QString, QString> plsFiles;   // path -> N
     const QStringList lines = text.split(QRegularExpression(QStringLiteral("[\r\n]+")), Qt::SkipEmptyParts);
     for (QString line : lines) {
         line = line.trimmed();
+        if (line.startsWith(QLatin1String("#EXTINF:"), Qt::CaseInsensitive)) {
+            const int comma = line.indexOf(QLatin1Char(','));
+            pendingTitle = comma >= 0 ? line.mid(comma + 1).trimmed() : QString();
+            continue;
+        }
         if (line.isEmpty() || line.startsWith(QLatin1Char('#')) || line.startsWith(QLatin1Char('[')))
             continue;
+        QString number;
         if (pls) {
-            if (!line.startsWith(QLatin1String("File"), Qt::CaseInsensitive))
-                continue;
             const int eq = line.indexOf(QLatin1Char('='));
             if (eq < 0)
                 continue;
-            line = line.mid(eq + 1).trimmed();
+            const QString key = line.left(eq).trimmed();
+            const QString value = line.mid(eq + 1).trimmed();
+            if (key.startsWith(QLatin1String("Title"), Qt::CaseInsensitive)) {
+                plsTitles.insert(key.mid(5), value);
+                continue;
+            }
+            if (!key.startsWith(QLatin1String("File"), Qt::CaseInsensitive))
+                continue;
+            number = key.mid(4);
+            line = value;
         }
-        if (line.startsWith(QLatin1String("file://")))
+        if (line.startsWith(QLatin1String("file://"), Qt::CaseInsensitive)) {
             line = QUrl(line).toLocalFile();
-        if (line.contains(QLatin1String("://")))
-            continue; // streams are not supported
-        // Playlists written on Windows use backslashes.
-        if (!QFileInfo::exists(line) && line.contains(QLatin1Char('\\')))
-            line.replace(QLatin1Char('\\'), QLatin1Char('/'));
-        if (QDir::isRelativePath(line))
-            line = base.absoluteFilePath(line);
-        result << QDir::cleanPath(line);
+        } else if (!isUrl(line)) {
+            // Playlists written on Windows use backslashes.
+            if (!QFileInfo::exists(line) && line.contains(QLatin1Char('\\')))
+                line.replace(QLatin1Char('\\'), QLatin1Char('/'));
+            if (QDir::isRelativePath(line))
+                line = base.absoluteFilePath(line);
+            line = QDir::cleanPath(line);
+        }
+        result << line;
+        if (titles && !pendingTitle.isEmpty() && isUrl(line))
+            titles->insert(line, pendingTitle);
+        if (!number.isEmpty())
+            plsFiles.insert(line, number);
+        pendingTitle.clear();
+    }
+    if (titles) {
+        for (auto it = plsFiles.constBegin(); it != plsFiles.constEnd(); ++it) {
+            const QString t = plsTitles.value(it.value());
+            if (!t.isEmpty() && isUrl(it.key()))
+                titles->insert(it.key(), t);
+        }
     }
     return result;
 }
 
-bool PlaylistModel::writePlaylistFile(const QString &file, const QStringList &paths)
+bool PlaylistModel::writePlaylistFile(const QString &file, const QStringList &paths,
+                                      const QHash<QString, QString> &titles)
 {
     QSaveFile f(file);
     if (!f.open(QIODevice::WriteOnly))
         return false;
     QTextStream out(&f);
+    auto titleOf = [&titles](const QString &p) {
+        const QString t = titles.value(p);
+        return t.isEmpty() ? (isUrl(p) ? p : QFileInfo(p).completeBaseName()) : t;
+    };
     const QString lower = file.toLower();
     if (lower.endsWith(QLatin1String(".pls"))) {
         out << "[playlist]\n";
         for (int i = 0; i < paths.size(); ++i) {
             out << "File" << (i + 1) << '=' << paths.at(i) << '\n';
-            out << "Title" << (i + 1) << '=' << QFileInfo(paths.at(i)).completeBaseName() << '\n';
+            out << "Title" << (i + 1) << '=' << titleOf(paths.at(i)) << '\n';
+            if (isUrl(paths.at(i)))
+                out << "Length" << (i + 1) << "=-1\n";
         }
         out << "NumberOfEntries=" << paths.size() << '\n';
         out << "Version=2\n";
     } else if (lower.endsWith(QLatin1String(".m3u")) || lower.endsWith(QLatin1String(".m3u8"))) {
         out << "#EXTM3U\n";
         for (const QString &p : paths)
-            out << "#EXTINF:-1," << QFileInfo(p).completeBaseName() << '\n' << p << '\n';
+            out << "#EXTINF:-1," << titleOf(p) << '\n' << p << '\n';
     } else {
-        for (const QString &p : paths)
+        // Billy playlist: one entry per line; station names as #EXTINF comments.
+        for (const QString &p : paths) {
+            if (titles.contains(p))
+                out << "#EXTINF:-1," << titles.value(p) << '\n';
             out << p << '\n';
+        }
     }
     out.flush();
     return f.commit();

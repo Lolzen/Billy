@@ -49,7 +49,7 @@ RenameDialog::RenameDialog(const QString &path, QWidget *parent)
     lines << tr("Path: %1").arg(QDir::toNativeSeparators(fi.absolutePath()));
     lines << tr("Size: %1").arg(QLocale().formattedDataSize(fi.size()));
     lines << tr("Modified: %1").arg(QLocale().toString(fi.lastModified(), QLocale::ShortFormat));
-    const AudioInfo info = Audio::probe(path, true, true);
+    const AudioInfo info = Audio::probe(path, true);
     if (info.ok) {
         QString fmt = tr("Format: %1").arg(info.format);
         lines << fmt;

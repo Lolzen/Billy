@@ -10,8 +10,8 @@ Tastatur bedienen. Es gibt keine Tags, keine Skins und keine Bibliothek, sondern
 
 ## Was ist das genau?
 
-Dieses Projekt ist eine **eigenständige Neuimplementierung** in C++17/Qt 6. Das Original war ein Delphi-Programm
-auf Basis der BASS-Soundbibliothek. Aus der `Billy.exe` wurden nur Formular-Layouts, Menüs, Tastenkürzel,
+Dieses Projekt ist eine **eigenständige Neuimplementierung** in C++17 mit Qt 6 und FFmpeg. Das Original war
+ein Delphi-Programm auf Basis der BASS-Soundbibliothek. Aus der `Billy.exe` wurden nur Formular-Layouts, Menüs, Tastenkürzel,
 INI-Schlüssel und Playlist-Formate ausgelesen. Der Programmcode ist komplett neu geschrieben. Code, Grafiken
 und Dokumentation des Originals sind nicht enthalten: Laut Lizenz des Originals darf es nicht verändert werden,
 und alle Rechte bleiben beim Autor.
@@ -19,10 +19,19 @@ und alle Rechte bleiben beim Autor.
 ## Funktionen
 
 * **Gapless-Wiedergabe**: Ein Decoder-Thread hängt den nächsten Titel nahtlos an denselben Ausgabestrom an.
-  Bei MP3 entfernt libmpg123 den Encoder-Delay und das Padding (LAME/Xing-Header).
-  Getestet mit einem Sinuston, der auf mehrere Dateien aufgeteilt war: keine Lücke und kein Knacken an den
-  Titelgrenzen, bei MP3, FLAC, Ogg Vorbis und WAV.
-* Formate: MP3/MP2/MP1, WAV, FLAC, Ogg Vorbis, Opus, AIFF
+  FFmpeg entfernt Encoder-Delay und Padding (LAME/Xing-Header bei MP3, Pre-Skip bei Ogg/Opus, Editlists bei
+  M4A). Hat der nächste Titel eine andere Samplerate, rechnet libswresample ihn auf die laufende Rate um, damit
+  der Ausgabestrom nicht neu geöffnet werden muss.
+  Getestet mit einem Sinuston, der auf drei Dateien aufgeteilt war: Die Titel ergeben hintereinander dekodiert
+  wieder exakt die ursprüngliche Länge, ohne Lücke und ohne Knacken. Das gilt für WAV, FLAC, MP3 (CBR und
+  VBR), Ogg Vorbis, Opus, AAC/M4A und für gemischte Sampleraten.
+* Formate: alles, was FFmpeg dekodiert, darunter MP3/MP2/MP1, WAV, FLAC, Ogg Vorbis, Opus, AAC/M4A, ALAC,
+  WMA, APE, WavPack, Musepack und AIFF. Sampelgenaues Springen in allen Formaten.
+* **Internetradio**: „Add url“ (Ctrl+R) für Shoutcast-/Icecast-Streams (MP3, AAC, Ogg, Opus, HLS) und
+  Senderlinks auf `.pls`/`.m3u`. Sendername und aktueller Titel werden aus den ICY- bzw. Ogg-Metadaten
+  gelesen und im Fenstertitel, in der Statusleiste und über MPRIS angezeigt. Billy puffert 1,5 s vor, zeigt
+  „Buffering…“ an, verbindet bei Abbrüchen neu und gibt nach 30 s ohne Daten mit „Lost connection“ auf.
+  Sender lassen sich wie Dateien in Playlists und Favoriten speichern.
 * Ordner öffnen (F4) oder hinzufügen (F3), mit oder ohne Unterordner, optional mit Datumsfilter
   (heute, letzte Woche, letzter Monat). Das Einlesen läuft im Hintergrund und lässt sich mit ESC abbrechen.
 * Playmodes: Repeat list, Repeat file, Play list, Play file, Shuffle (mit Historie). Umschalten per F9 oder
@@ -54,7 +63,7 @@ Alle Tastenkürzel zeigt F1.
 
 | Original | Grund / Ersatz |
 | --- | --- |
-| Internetradio und Aufnahme | im Original schon halb versteckt; vielleicht später |
+| Aufnahme von Internetradio | vielleicht später |
 | last.fm-Scrobbling | die alte Audioscrobbler-API 1.2 gibt es nicht mehr |
 | Update-Check auf sheepfriends.com | die Seite existiert nicht mehr |
 | Dateizuordnungen in der Registry | stattdessen `billy.desktop` mit MIME-Typen |
@@ -63,18 +72,20 @@ Alle Tastenkürzel zeigt F1.
 
 ## Bauen
 
-Abhängigkeiten: CMake ≥ 3.16, ein C++17-Compiler, Qt 6 (Widgets, Multimedia, Network, optional DBus),
-libmpg123 und libsndfile (≥ 1.0.29 für Opus).
+Abhängigkeiten: CMake ≥ 3.16, ein C++17-Compiler, Qt 6 (Widgets, Multimedia, Network, optional DBus) und
+FFmpeg (libavformat, libavcodec, libavutil, libswresample). Getestet mit Qt 6.4 und FFmpeg 6.1. Für FFmpeg 4.4
+und 5.0 ist Kompatibilitätscode vorhanden, der ist aber noch nicht getestet.
 
 ```sh
 # Debian / Ubuntu (24.04+)
-sudo apt install build-essential cmake pkg-config qt6-base-dev qt6-multimedia-dev libmpg123-dev libsndfile1-dev
+sudo apt install build-essential cmake pkg-config qt6-base-dev qt6-multimedia-dev \
+                 libavformat-dev libavcodec-dev libavutil-dev libswresample-dev
 
-# Fedora
-sudo dnf install gcc-c++ cmake qt6-qtbase-devel qt6-qtmultimedia-devel mpg123-devel libsndfile-devel
+# Fedora (FFmpeg aus RPM Fusion, oder ffmpeg-free-devel)
+sudo dnf install gcc-c++ cmake qt6-qtbase-devel qt6-qtmultimedia-devel ffmpeg-free-devel
 
 # Arch
-sudo pacman -S base-devel cmake qt6-base qt6-multimedia mpg123 libsndfile
+sudo pacman -S base-devel cmake qt6-base qt6-multimedia ffmpeg
 ```
 
 ```sh
@@ -96,13 +107,15 @@ Alles liegt in `~/.config/Billy/`:
 
 Ctrl+Alt+E öffnet den Ordner.
 
-Debug-Ausgaben der Audio-Engine: `QT_LOGGING_RULES="billy.*.debug=true" billy`
+Debug-Ausgaben der Audio-Engine: `QT_LOGGING_RULES="billy.*.debug=true" billy`, FFmpeg-Meldungen
+zusätzlich mit `BILLY_FFMPEG_LOG=1`.
 
 ## Aufbau des Codes
 
 ```
-src/audio/Decoder.*       mpg123- und libsndfile-Decoder (float), Datei-Infos und Tags
-src/audio/AudioEngine.*   Decoder-Thread, Puffer (Standard 3000 ms), Gapless-Übergänge, Ausgabe-Thread mit QAudioSink
+src/audio/Decoder.*       FFmpeg-Decoder (Stereo-Float, Resampling, Streams mit ICY-Metadaten), Datei-Infos und Tags
+src/audio/AudioEngine.*   Decoder-Thread, Puffer (Standard 3000 ms), Gapless-Übergänge, Stream-Puffer,
+                          Ausgabe-Thread mit QAudioSink
 src/PlaylistModel.*       Playlist, Queue, Shuffle-Historie, Playmodes, Laden/Speichern, Ordner-Scan, Sortierung
 src/MainWindow.*          Hauptfenster, Aktionen und Tastenkürzel, Numpad, Tray, Pegelanzeige
 src/widgets/              SheepProgress (Balken und LED-Meter), Playlist-Ansicht, Button-Glyphen
@@ -110,13 +123,11 @@ src/dialogs/              Finder, Umbenennen, Mehrfach-Umbenenner, Ordnerauswahl
 src/Mpris.*               MPRIS2 über D-Bus
 ```
 
-Zur Audioausgabe: Wechselt die Samplerate zwischen zwei Titeln (z. B. von 44,1 auf 48 kHz), wird der
-Ausgabestrom neu geöffnet. Nur an dieser Stelle entsteht eine kurze Lücke. Innerhalb eines Albums ist die
-Wiedergabe lückenlos.
+Zur Audioausgabe: Ein explizit gestarteter Titel (Enter, Doppelklick) läuft in seiner eigenen Samplerate, also
+bitgenau. Alle direkt folgenden Titel laufen in derselben Rate weiter und werden bei Bedarf umgerechnet.
 
 ### Warum nicht BASS?
 
 BASS (un4seen) gibt es auch für Linux, ist aber closed source und nur für nicht-kommerzielle Nutzung frei.
-Die Bibliothek darf nicht mit ins Repository und nicht in Distributionspakete. mpg123, libsndfile und
-Qt Multimedia sind frei, in jeder Distribution enthalten, und mpg123 beherrscht exaktes MP3-Gapless.
-Ein optionales BASS-Backend wäre über die `Decoder`-Schnittstelle möglich.
+Die Bibliothek darf nicht mit ins Repository und nicht in Distributionspakete. FFmpeg ist frei (LGPL), in
+jeder Distribution enthalten und deckt Formate, Gapless, Resampling und Streams ab.

@@ -34,7 +34,7 @@ public:
     bool hasTrackList() const { return false; }
     QString identity() const { return QStringLiteral("Billy"); }
     QString desktopEntry() const { return QStringLiteral("billy"); }
-    QStringList uriSchemes() const { return {QStringLiteral("file")}; }
+    QStringList uriSchemes() const { return {QStringLiteral("file"), QStringLiteral("http"), QStringLiteral("https")}; }
     QStringList mimeTypes() const
     {
         return {QStringLiteral("audio/mpeg"), QStringLiteral("audio/x-wav"), QStringLiteral("audio/ogg"),
@@ -115,8 +115,12 @@ public:
         if (len > 0)
             map.insert(QStringLiteral("mpris:length"), qlonglong(len * 1e6));
         map.insert(QStringLiteral("xesam:title"), m_w->mprisTitle());
-        map.insert(QStringLiteral("xesam:url"), QUrl::fromLocalFile(path).toString());
-        map.insert(QStringLiteral("xesam:album"), QFileInfo(path).dir().dirName());
+        if (path.contains(QLatin1String("://"))) {
+            map.insert(QStringLiteral("xesam:url"), path);
+        } else {
+            map.insert(QStringLiteral("xesam:url"), QUrl::fromLocalFile(path).toString());
+            map.insert(QStringLiteral("xesam:album"), QFileInfo(path).dir().dirName());
+        }
         return map;
     }
     double volume() const { return m_w->volume() / 100.0; }
@@ -133,7 +137,11 @@ public slots:
     void Play() { m_w->mprisPlay(); }
     void Seek(qlonglong offset) { m_w->seekTo(m_w->mprisPosition() + offset / 1e6); }
     void SetPosition(const QDBusObjectPath &, qlonglong pos) { m_w->seekTo(pos / 1e6); }
-    void OpenUri(const QString &uri) { m_w->openPaths({QUrl(uri).toLocalFile()}, true); }
+    void OpenUri(const QString &uri)
+    {
+        const QUrl url(uri);
+        m_w->openPaths({url.isLocalFile() ? url.toLocalFile() : uri}, true);
+    }
 
 signals:
     void Seeked(qlonglong position);

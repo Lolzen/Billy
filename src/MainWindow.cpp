@@ -38,7 +38,11 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QProcess>
+#include <QPushButton>
 #include <QScreen>
 #include <QStatusBar>
 #include <QSystemTrayIcon>
@@ -56,6 +60,13 @@ namespace {
 
 constexpr int kTickMs = 40;
 const QString kProjectUrl = QStringLiteral("https://github.com/Lolzen/Billy");
+
+// Station links often point to a .pls or .m3u file instead of the stream.
+bool isRemotePlaylist(const QUrl &url)
+{
+    const QString p = url.path().toLower();
+    return p.endsWith(QLatin1String(".pls")) || p.endsWith(QLatin1String(".m3u"));
+}
 
 bool isPlaylistFile(const QString &path)
 {
@@ -88,6 +99,12 @@ MainWindow::MainWindow()
     connect(m_engine, &AudioEngine::finished, this, &MainWindow::onFinished);
     connect(m_engine, &AudioEngine::error, this, &MainWindow::onEngineError);
     connect(m_engine, &AudioEngine::stateChanged, this, &MainWindow::onStateChanged);
+    connect(m_engine, &AudioEngine::streamMetadata, this, &MainWindow::onStreamMetadata);
+    connect(m_engine, &AudioEngine::streamInfo, this, [this](quint64, const QString &codec, int kbps) {
+        m_streamCodec = codec;
+        m_streamKbps = kbps;
+        showStatus(kbps > 0 ? tr("Playing internet stream at %1 kbps").arg(kbps) : tr("Playing internet stream"));
+    });
 
     // Anything that may change "what plays next".
     connect(m_model, &PlaylistModel::queueChanged, this, &MainWindow::refreshNext);
@@ -271,6 +288,7 @@ void MainWindow::createActions()
     QAction *openDir = addAct(tr("&Open folder..."), {K(Qt::Key_F4)}, [this] { openFolderDialog(false); });
     QAction *addDir = addAct(tr("&Add folder..."), {K(Qt::Key_F3)}, [this] { openFolderDialog(true); });
     QAction *addFile = addAct(tr("Add &file(s)..."), {K(CTRL | Qt::Key_L)}, [this] { addFiles(); });
+    QAction *addUrlAc = addAct(tr("Add &url..."), {K(CTRL | Qt::Key_R)}, [this] { addUrl(); });
     QAction *openList = addAct(tr("&Open playlist..."), {K(CTRL | Qt::Key_O)}, [this] { openPlaylist(); });
     QAction *saveList = addAct(tr("&Save playlist..."), {K(CTRL | Qt::Key_S)}, [this] { savePlaylist(); });
     QAction *exitAc = addAct(tr("&Exit"), {K(Qt::Key_Escape)}, [this] {
@@ -437,7 +455,7 @@ void MainWindow::createActions()
 
     // Menus
     QMenu *file = menuBar()->addMenu(tr("&File"));
-    file->addActions({openDir, addDir, addFile});
+    file->addActions({openDir, addDir, addFile, addUrlAc});
     file->addSeparator();
     file->addActions({openList, saveList});
     file->addSeparator();
@@ -506,7 +524,7 @@ void MainWindow::createTray()
     menu->addAction(tr("Previous"), this, &MainWindow::previousTrack);
     menu->addAction(tr("&Copy playing title"), this, [this] {
         if (m_model->currentId())
-            QApplication::clipboard()->setText(displayName(m_model->currentId()));
+            QApplication::clipboard()->setText(mprisTitle());
     });
     menu->addSeparator();
     QAction *open = menu->addAction(tr("&Open"), this, &MainWindow::mprisRaise);
@@ -589,7 +607,10 @@ void MainWindow::playId(quint64 id, double startSeconds)
     if (path.isEmpty())
         return;
     m_errorsInRow = 0;
+    m_streamTitle.clear();
     m_model->setCurrentId(id);
+    if (PlaylistModel::isUrl(path))
+        showStatus(tr("Connecting %1").arg(path), 30000);
     m_engine->play(path, id, startSeconds);
     updateTitle();
 }
@@ -610,6 +631,7 @@ void MainWindow::refreshNext()
 
 void MainWindow::onTrackStarted(quint64 id)
 {
+    m_streamTitle.clear();
     m_model->setCurrentId(id);
     updateTitle();
     if (m_mpris)
@@ -658,6 +680,15 @@ void MainWindow::updateTick()
     if (state == AudioEngine::Stopped)
         return;
 
+    const bool buffering = m_engine->isBuffering();
+    if (buffering != m_wasBuffering) {
+        m_wasBuffering = buffering;
+        if (buffering)
+            showStatus(tr("Buffering..."), 60000);
+        else
+            showStatus(m_streamTitle.isEmpty() ? QString() : m_streamTitle, 1);
+    }
+
     const double pos = m_engine->position();
     const double dur = m_engine->duration();
     if (!m_seekDragging) {
@@ -691,7 +722,13 @@ void MainWindow::updateTick()
 QString MainWindow::displayName(quint64 id) const
 {
     const QString path = m_model->pathOf(id);
-    return path.isEmpty() ? QString() : QFileInfo(path).completeBaseName();
+    if (path.isEmpty())
+        return {};
+    if (PlaylistModel::isUrl(path)) {
+        const QString name = m_model->titleOf(id);
+        return name.isEmpty() ? path : name;
+    }
+    return QFileInfo(path).completeBaseName();
 }
 
 void MainWindow::updateTitle()
@@ -699,7 +736,7 @@ void MainWindow::updateTitle()
     const quint64 id = m_model->currentId();
     QString title = QStringLiteral("Billy");
     if (id && m_engine->state() != AudioEngine::Stopped)
-        title = displayName(id) + QStringLiteral(" - Billy");
+        title = (m_streamTitle.isEmpty() ? displayName(id) : m_streamTitle) + QStringLiteral(" - Billy");
     setWindowTitle(title);
     if (m_tray)
         m_tray->setToolTip(title);
@@ -784,6 +821,8 @@ void MainWindow::seekTo(double seconds)
     if (m_engine->state() == AudioEngine::Stopped)
         return;
     const double d = m_engine->duration();
+    if (d <= 0)
+        return; // internet streams can't seek
     if (d > 0 && seconds >= d)
         seconds = d - 0.1;
     m_engine->seek(qMax(0.0, seconds));
@@ -950,7 +989,8 @@ void MainWindow::openPlaylist()
 
 void MainWindow::loadPlaylistFile(const QString &file, bool play)
 {
-    const QStringList paths = PlaylistModel::readPlaylistFile(file);
+    QHash<QString, QString> titles;
+    const QStringList paths = PlaylistModel::readPlaylistFile(file, &titles);
     if (paths.isEmpty()) {
         showStatus(tr("The playlist is empty or could not be read."));
         return;
@@ -958,6 +998,7 @@ void MainWindow::loadPlaylistFile(const QString &file, bool play)
     m_model->clear();
     m_settings.sourceFolders.clear();
     m_model->addPaths(paths);
+    m_model->applyTitles(titles);
     m_view->selectRows({0});
     showStatus(QFileInfo(file).completeBaseName(), 3000);
     if (play)
@@ -985,7 +1026,7 @@ void MainWindow::savePlaylist()
             file += QStringLiteral(".txt");
     }
     m_settings.playlistFolder = QFileInfo(file).absolutePath();
-    if (!PlaylistModel::writePlaylistFile(file, m_model->paths()))
+    if (!PlaylistModel::writePlaylistFile(file, m_model->paths(), m_model->titles()))
         QMessageBox::warning(this, QStringLiteral("Billy"), tr("Your playlist could not be saved."));
 }
 
@@ -1066,6 +1107,10 @@ void MainWindow::fileInfo()
     }
     const int row = rows.first();
     const QString path = m_model->pathAt(row);
+    if (PlaylistModel::isUrl(path)) {
+        showStreamInfo(row);
+        return;
+    }
     if (!QFileInfo::exists(path)) {
         QMessageBox::warning(this, QStringLiteral("Billy"), tr("File not found."));
         return;
@@ -1116,6 +1161,10 @@ void MainWindow::trashSelected()
     QStringList failed;
     for (int r : rows) {
         const QString p = m_model->pathAt(r);
+        if (PlaylistModel::isUrl(p)) {
+            done << r; // nothing on disk, just remove the entry
+            continue;
+        }
         if (m_model->idAt(r) == m_engine->currentId())
             stopPlayback();
         if (QFile::moveToTrash(p) || !QFileInfo::exists(p))
@@ -1151,6 +1200,10 @@ void MainWindow::exploreSelected()
         return;
     }
     const QString path = m_model->pathAt(cur.row());
+    if (PlaylistModel::isUrl(path)) {
+        QMessageBox::information(this, QStringLiteral("Billy"), tr("No file selected to open its folder."));
+        return;
+    }
 #ifdef BILLY_HAVE_DBUS
     // Ask the file manager to highlight the file, fall back to opening the folder.
     QDBusMessage msg = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.FileManager1"),
@@ -1187,13 +1240,18 @@ void MainWindow::pasteEntries()
     QStringList paths;
     const QMimeData *mime = QApplication::clipboard()->mimeData();
     if (mime && mime->hasUrls()) {
-        for (const QUrl &u : mime->urls())
+        for (const QUrl &u : mime->urls()) {
             if (u.isLocalFile() && Audio::isSupported(u.toLocalFile()))
                 paths << u.toLocalFile();
+            else if (!u.isLocalFile() && PlaylistModel::isUrl(u.toString()))
+                paths << u.toString();
+        }
     } else if (mime && mime->hasText()) {
-        for (const QString &line : mime->text().split(QLatin1Char('\n'), Qt::SkipEmptyParts))
-            if (QFileInfo::exists(line.trimmed()) && Audio::isSupported(line.trimmed()))
-                paths << line.trimmed();
+        for (const QString &line : mime->text().split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+            const QString p = line.trimmed();
+            if ((QFileInfo::exists(p) && Audio::isSupported(p)) || PlaylistModel::isUrl(p))
+                paths << p;
+        }
     }
     if (paths.isEmpty())
         paths = m_clipboard;
@@ -1270,7 +1328,8 @@ void MainWindow::totalTime()
     if (rows.size() <= 1)
         for (int r = 0, n = m_model->count(); r < n; ++r)
             rows << r;
-    const QStringList paths = m_model->paths(rows);
+    QStringList paths = m_model->paths(rows);
+    paths.erase(std::remove_if(paths.begin(), paths.end(), &PlaylistModel::isUrl), paths.end());
     if (paths.isEmpty())
         return;
     auto cancel = std::make_shared<std::atomic_bool>(false);
@@ -1361,7 +1420,7 @@ void MainWindow::addToFavorites()
                                  tr("A playlist with the same name already exists.\nWould you like to replace the existing file?"))
                != QMessageBox::Yes)
         return;
-    if (!PlaylistModel::writePlaylistFile(file, m_model->paths()))
+    if (!PlaylistModel::writePlaylistFile(file, m_model->paths(), m_model->titles()))
         QMessageBox::warning(this, QStringLiteral("Billy"), tr("Your playlist could not be saved."));
 }
 
@@ -1414,10 +1473,13 @@ void MainWindow::minimizeToTray()
 
 void MainWindow::handleUrlsDropped(const QList<QUrl> &urls, int row)
 {
-    QStringList files, dirs;
+    QStringList files, dirs, streams;
     for (const QUrl &u : urls) {
-        if (!u.isLocalFile())
+        if (!u.isLocalFile()) {
+            if (PlaylistModel::isUrl(u.toString()))
+                streams << u.toString();
             continue;
+        }
         const QString p = u.toLocalFile();
         const QFileInfo fi(p);
         if (fi.isDir())
@@ -1427,6 +1489,8 @@ void MainWindow::handleUrlsDropped(const QList<QUrl> &urls, int row)
         else if (isPlaylistFile(p))
             files += PlaylistModel::readPlaylistFile(p);
     }
+    if (!streams.isEmpty())
+        addStreams(streams, {}, false);
     if (!files.isEmpty()) {
         row = m_model->addPaths(files, row) + files.size();
     }
@@ -1436,9 +1500,13 @@ void MainWindow::handleUrlsDropped(const QList<QUrl> &urls, int row)
 
 void MainWindow::openPaths(const QStringList &paths, bool external)
 {
-    QStringList files, dirs, lists;
+    QStringList files, dirs, lists, streams;
     for (const QString &raw : paths) {
         QString p = raw;
+        if (PlaylistModel::isUrl(p)) {
+            streams << p;
+            continue;
+        }
         if (p.startsWith(QLatin1String("file://")))
             p = QUrl(p).toLocalFile();
         const QFileInfo fi(p);
@@ -1451,6 +1519,10 @@ void MainWindow::openPaths(const QStringList &paths, bool external)
     }
     if (external)
         mprisRaise();
+    if (!streams.isEmpty()) {
+        addStreams(streams, {}, true);
+        return;
+    }
     if (!lists.isEmpty()) {
         loadPlaylistFile(lists.first(), true);
         return;
@@ -1500,8 +1572,10 @@ void MainWindow::openPaths(const QStringList &paths, bool external)
 
 void MainWindow::restoreSession()
 {
-    const QStringList paths = PlaylistModel::readPlaylistFile(Settings::playlistFile());
+    QHash<QString, QString> titles;
+    const QStringList paths = PlaylistModel::readPlaylistFile(Settings::playlistFile(), &titles);
     m_model->addPaths(paths);
+    m_model->applyTitles(titles);
     const int row = m_settings.resumeRow;
     if (row >= 0 && row < m_model->count()) {
         m_view->selectRows({row});
@@ -1514,11 +1588,130 @@ void MainWindow::restoreSession()
     }
 }
 
+// ----------------------------------------------------------- internet radio
+
+void MainWindow::addUrl()
+{
+    QString suggestion;
+    const QString clip = QApplication::clipboard()->text().trimmed();
+    if (PlaylistModel::isUrl(clip) && !clip.contains(QLatin1Char('\n')))
+        suggestion = clip;
+    bool ok = false;
+    QString text = QInputDialog::getText(this, tr("Add URL"), tr("Internet radio URL:"), QLineEdit::Normal,
+                                         suggestion, &ok).trimmed();
+    if (!ok || text.isEmpty())
+        return;
+    if (!text.contains(QLatin1String("://")))
+        text.prepend(QStringLiteral("http://"));
+    const QUrl url(text, QUrl::StrictMode);
+    if (!url.isValid() || url.host().isEmpty()) {
+        QMessageBox::warning(this, tr("Add URL"), tr("Not a valid URL"));
+        return;
+    }
+    addStreams({url.toString()}, {}, true);
+}
+
+void MainWindow::addStreams(const QStringList &urls, const QHash<QString, QString> &titles, bool play)
+{
+    QStringList direct;
+    for (const QString &u : urls) {
+        const QUrl url(u);
+        if (isRemotePlaylist(url) && (url.scheme() == QLatin1String("http") || url.scheme() == QLatin1String("https")))
+            resolveRemotePlaylist(url, play && direct.isEmpty());
+        else
+            direct << u;
+    }
+    if (direct.isEmpty())
+        return;
+    const QModelIndex cur = m_view->currentIndex();
+    const int row = m_model->addPaths(direct, cur.isValid() ? cur.row() + 1 : -1);
+    m_model->applyTitles(titles);
+    m_view->selectRows({row});
+    if (play)
+        playId(m_model->idAt(row));
+}
+
+void MainWindow::resolveRemotePlaylist(const QUrl &url, bool play)
+{
+    if (!m_net)
+        m_net = new QNetworkAccessManager(this);
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Billy/" BILLY_VERSION));
+    request.setTransferTimeout(15000);
+    QNetworkReply *reply = m_net->get(request);
+    showStatus(tr("Connecting %1").arg(url.host()), 15000);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, url, play] {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            showStatus(tr("Could not connect to URL.") + QStringLiteral(" ") + reply->errorString(), 10000);
+            return;
+        }
+        const QString text = QString::fromUtf8(reply->read(1 << 20));
+        QHash<QString, QString> titles;
+        QStringList streams = PlaylistModel::parsePlaylist(text, QString(), url.path().toLower().endsWith(QLatin1String(".pls")), &titles);
+        streams.erase(std::remove_if(streams.begin(), streams.end(), [](const QString &s) { return !PlaylistModel::isUrl(s); }),
+                      streams.end());
+        if (streams.isEmpty()) {
+            showStatus(tr("Error opening URL."), 10000);
+            return;
+        }
+        // Stations list mirrors of the same stream; the first one is enough.
+        QHash<QString, QString> first;
+        if (titles.contains(streams.first()))
+            first.insert(streams.first(), titles.value(streams.first()));
+        addStreams({streams.first()}, first, play);
+    });
+}
+
+void MainWindow::onStreamMetadata(quint64 id, const QString &name, const QString &title)
+{
+    if (!name.isEmpty() && m_model->titleOf(id).isEmpty())
+        m_model->setTitle(id, name);
+    m_streamTitle = title;
+    if (!title.isEmpty() && !m_wasBuffering)
+        showStatus(title, 600000);
+    updateTitle();
+    if (m_mpris)
+        m_mpris->notifyChanged();
+}
+
+void MainWindow::showStreamInfo(int row)
+{
+    const quint64 id = m_model->idAt(row);
+    QStringList lines;
+    const QString name = m_model->titleOf(id);
+    if (!name.isEmpty())
+        lines << tr("Station: %1").arg(name);
+    lines << tr("URL: %1").arg(m_model->pathAt(row));
+    if (id == m_engine->currentId() && m_engine->state() != AudioEngine::Stopped) {
+        if (!m_streamTitle.isEmpty())
+            lines << tr("Playing: %1").arg(m_streamTitle);
+        if (!m_streamCodec.isEmpty() || m_streamKbps > 0)
+            lines << tr("Format: %1 %2 kbps").arg(m_streamCodec).arg(m_streamKbps);
+        lines << tr("Listening for: %1").arg(Audio::formatTime(m_engine->position()));
+    }
+    QMessageBox box(QMessageBox::Information, tr("Internet radio"), lines.join(QLatin1Char('\n')),
+                    QMessageBox::Ok, this);
+    QPushButton *rename = box.addButton(tr("&Rename..."), QMessageBox::ActionRole);
+    box.setEscapeButton(QMessageBox::Ok);
+    box.exec();
+    if (box.clickedButton() == rename) {
+        bool ok = false;
+        const QString t = QInputDialog::getText(this, tr("Rename"), tr("Station name:"), QLineEdit::Normal,
+                                                name, &ok).trimmed();
+        if (ok)
+            m_model->setTitle(id, t);
+    }
+}
+
 // ------------------------------------------------------------- MPRIS API
 
 AudioEngine::State MainWindow::mprisState() const { return m_engine->state(); }
 QString MainWindow::mprisPath() const { return m_engine->state() == AudioEngine::Stopped ? QString() : m_model->pathOf(m_model->currentId()); }
-QString MainWindow::mprisTitle() const { return displayName(m_model->currentId()); }
+QString MainWindow::mprisTitle() const
+{
+    return m_streamTitle.isEmpty() ? displayName(m_model->currentId()) : m_streamTitle;
+}
 quint64 MainWindow::mprisTrackId() const { return m_model->currentId(); }
 double MainWindow::mprisLength() const { return m_engine->duration(); }
 double MainWindow::mprisPosition() const { return m_engine->position(); }
@@ -1749,7 +1942,7 @@ void MainWindow::closeEvent(QCloseEvent *e)
     // A read-only Playlist.txt means "always start with this list".
     const QFileInfo playlist(Settings::playlistFile());
     if (!playlist.exists() || playlist.isWritable())
-        PlaylistModel::writePlaylistFile(Settings::playlistFile(), m_model->paths());
+        PlaylistModel::writePlaylistFile(Settings::playlistFile(), m_model->paths(), m_model->titles());
     m_engine->stop();
     if (m_tray)
         m_tray->hide();

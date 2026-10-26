@@ -22,12 +22,14 @@ public:
         QueuePosRole,  // 1-based position in the queue, 0 if not queued
         ShuffledRole,  // already played in the current shuffle round
         PlayingRole,
+        IsUrlRole,     // internet stream
     };
 
     struct Entry
     {
         quint64 id = 0;
-        QString path;
+        QString path;  // file path or stream URL
+        QString title; // streams: station name
     };
 
     explicit PlaylistModel(QObject *parent = nullptr);
@@ -60,6 +62,11 @@ public:
     QList<int> moveRowList(QList<int> rows, int delta);   // Ctrl+Up/Down
     QList<int> moveRowsTo(QList<int> rows, int destination);
     void setPathAt(int row, const QString &path);
+    void setTitle(quint64 id, const QString &title);
+    QString titleOf(quint64 id) const;
+    QHash<QString, QString> titles() const;         // path -> title, streams only
+    void applyTitles(const QHash<QString, QString> &titles);
+    static bool isUrl(const QString &path);
     void crop(const QList<int> &rows);
     int removeMissing();
     int removeDuplicates();
@@ -85,8 +92,12 @@ public:
     void clearHistory(); // queue and shuffle history
 
     // Files
-    static QStringList readPlaylistFile(const QString &file);
-    static bool writePlaylistFile(const QString &file, const QStringList &paths);
+    // 'titles' receives #EXTINF / TitleN= names of the entries.
+    static QStringList readPlaylistFile(const QString &file, QHash<QString, QString> *titles = nullptr);
+    static QStringList parsePlaylist(const QString &text, const QString &baseDir, bool pls,
+                                     QHash<QString, QString> *titles = nullptr);
+    static bool writePlaylistFile(const QString &file, const QStringList &paths,
+                                  const QHash<QString, QString> &titles = {});
     static QStringList scanFolder(const QString &dir, bool recursive, const std::atomic_bool *cancel = nullptr,
                                   const QDateTime &newerThan = QDateTime());
     static void sortPaths(QStringList &paths, SortWay way);

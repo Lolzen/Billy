@@ -24,6 +24,8 @@ void PlaylistDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opti
         fg = m_scheme.queued;
     } else if (shuffled) {
         fg = m_scheme.shuffled;
+    } else if (index.data(PlaylistModel::IsUrlRole).toBool()) {
+        fg = m_scheme.radio;
     }
 
     painter->save();

@@ -36,7 +36,9 @@ public:
     explicit AudioEngine(QObject *parent = nullptr);
     ~AudioEngine() override;
 
-    void play(const QString &path, quint64 id, double startSeconds = 0);
+    // 'outputRate' 0 plays at the file's own rate (the output is reopened if
+    // needed); otherwise the file is resampled to that rate.
+    void play(const QString &path, quint64 id, double startSeconds = 0, int outputRate = 0);
     // Announces which track follows 'afterId'. Ignored when the decoder is no
     // longer working on 'afterId'. An id of 0 means "nothing follows".
     void setNext(quint64 afterId, const QString &path, quint64 id);
@@ -61,6 +63,7 @@ public:
     quint64 currentId() const { return m_currentId; }
     double position() const;  // seconds into the current track
     double duration() const;  // seconds, -1 if unknown
+    bool isBuffering() const; // an internet stream is filling its reserve
 
     // Peak levels (linear, 0..1) of the audio played since the last call.
     void takeLevels(float &left, float &right);
@@ -71,6 +74,9 @@ signals:
     void finished();                    // nothing left to play
     void error(quint64 id, const QString &message);
     void stateChanged(AudioEngine::State state);
+    // Internet streams: station name / current title, reported when playback reaches them.
+    void streamMetadata(quint64 id, const QString &name, const QString &title);
+    void streamInfo(quint64 id, const QString &codec, int kbps);
 
 private:
     friend class SinkWorker;
@@ -85,6 +91,9 @@ private:
         int rate = 0;
         long long trackFrame = 0;   // frame index (within the track) of samples[0]
         long long totalFrames = -1;
+        bool stream = false;
+        bool hasMeta = false;       // stream metadata changed at this chunk
+        QString metaName, metaTitle;
     };
 
     void decoderLoop();
@@ -107,6 +116,9 @@ private:
     quint64 m_cmdId = 0;
     quint64 m_cmdSeq = 0;
     double m_cmdSeconds = 0;
+    int m_cmdRate = 0;
+    int m_chainRate = 44100;   // output rate of the gapless chain
+    std::shared_ptr<std::atomic_bool> m_abort; // of the decoder in use / being opened
     quint64 m_seqCounter = 0;
 
     std::unique_ptr<Decoder> m_decoder;
@@ -135,6 +147,11 @@ private:
     int m_playingRate = 0;
     int m_wantRate = 0;        // != 0: output must be reopened at this rate
     bool m_drained = false;    // queue empty and end of stream reached
+    bool m_buffering = false;  // stream: wait until the reserve is filled
+    bool m_playingStream = false;
+    bool m_loggedBuffering = false;
+    QString m_metaName, m_metaTitle;
+    quint64 m_metaSeq = 0;
     float m_peakL = 0, m_peakR = 0;
 
     std::atomic<float> m_gain{1.0f};
@@ -152,5 +169,6 @@ private:
     QByteArray m_deviceId;
     int m_bufferMs = 3000;
     int m_drainTicks = 0;
+    quint64 m_seenMetaSeq = 0;
     QHash<quint64, QString> m_paths;
 };

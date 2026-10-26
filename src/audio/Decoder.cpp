@@ -1,168 +1,55 @@
 #include "audio/Decoder.h"
 
 #include <QFile>
-#include <QObject>
 #include <QFileInfo>
+#include <QObject>
 #include <QStringDecoder>
 
-#include <mpg123.h>
-#include <sndfile.h>
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/opt.h>
+#include <libavutil/time.h>
+#include <libswresample/swresample.h>
+}
 
 #include <cmath>
+#include <cstring>
 #include <mutex>
+#include <vector>
+
+// FFmpeg 5.1 replaced the channel layout bit masks by AVChannelLayout.
+#define BILLY_CH_LAYOUT (LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100))
 
 namespace {
 
-void initMpg123()
+void initFfmpeg()
 {
     static std::once_flag once;
     std::call_once(once, [] {
-#if MPG123_API_VERSION < 46
-        mpg123_init();
-#endif
+        av_log_set_level(qEnvironmentVariableIsSet("BILLY_FFMPEG_LOG") ? AV_LOG_INFO : AV_LOG_FATAL);
+        avformat_network_init();
     });
 }
 
-QString extensionOf(const QString &path)
+constexpr qint64 kStreamStallMs = 30000; // give up a silent stream after this
+
+qint64 nowMs()
 {
-    return QFileInfo(path).suffix().toLower();
+    return av_gettime_relative() / 1000;
 }
 
-bool isMpeg(const QString &path)
+QString ffError(int err)
 {
-    const QString ext = extensionOf(path);
-    return ext == QLatin1String("mp3") || ext == QLatin1String("mp2") || ext == QLatin1String("mp1");
+    char buf[AV_ERROR_MAX_STRING_SIZE] = {};
+    av_strerror(err, buf, sizeof buf);
+    return QString::fromUtf8(buf);
 }
 
-// ---------------------------------------------------------------- mpg123
-
-class Mpg123Decoder : public Decoder
+// ICY titles are usually UTF-8, but old servers send Latin-1.
+QString decodeText(const QByteArray &raw)
 {
-public:
-    ~Mpg123Decoder() override { close(); }
-
-    bool open(const QString &path) override
-    {
-        initMpg123();
-        int err = MPG123_OK;
-        m_handle = mpg123_new(nullptr, &err);
-        if (!m_handle) {
-            m_error = QString::fromUtf8(mpg123_plain_strerror(err));
-            return false;
-        }
-        // Gapless decoding (LAME/Xing encoder delay + padding removal) is what
-        // makes album playback seamless.
-        mpg123_param(m_handle, MPG123_FLAGS, MPG123_GAPLESS | MPG123_QUIET, 0.);
-        mpg123_param(m_handle, MPG123_ADD_FLAGS, MPG123_FORCE_FLOAT, 0.);
-        mpg123_format_none(m_handle);
-        const long *rates = nullptr;
-        size_t count = 0;
-        mpg123_rates(&rates, &count);
-        for (size_t i = 0; i < count; ++i)
-            mpg123_format(m_handle, rates[i], MPG123_MONO | MPG123_STEREO, MPG123_ENC_FLOAT_32);
-
-        if (mpg123_open(m_handle, QFile::encodeName(path).constData()) != MPG123_OK) {
-            m_error = QString::fromUtf8(mpg123_strerror(m_handle));
-            close();
-            return false;
-        }
-        long rate = 0;
-        int channels = 0, encoding = 0;
-        if (mpg123_getformat(m_handle, &rate, &channels, &encoding) != MPG123_OK) {
-            m_error = QString::fromUtf8(mpg123_strerror(m_handle));
-            close();
-            return false;
-        }
-        // Lock the output format so that a stray frame does not change it.
-        mpg123_format_none(m_handle);
-        mpg123_format(m_handle, rate, channels, encoding);
-        m_rate = int(rate);
-        m_channels = channels;
-        const off_t len = mpg123_length(m_handle);
-        m_totalFrames = len > 0 ? (long long)len : -1;
-        return true;
-    }
-
-    long read(float *out, long frames) override
-    {
-        if (!m_handle)
-            return 0;
-        size_t done = 0;
-        const size_t bytes = size_t(frames) * size_t(m_channels) * sizeof(float);
-        int ret = mpg123_read(m_handle, reinterpret_cast<unsigned char *>(out), bytes, &done);
-        while (ret == MPG123_NEW_FORMAT && done == 0)
-            ret = mpg123_read(m_handle, reinterpret_cast<unsigned char *>(out), bytes, &done);
-        if (ret != MPG123_OK && ret != MPG123_DONE && ret != MPG123_NEW_FORMAT && done == 0)
-            return 0;
-        return long(done / (size_t(m_channels) * sizeof(float)));
-    }
-
-    bool seek(long long frame) override
-    {
-        return m_handle && mpg123_seek(m_handle, off_t(frame), SEEK_SET) >= 0;
-    }
-
-private:
-    void close()
-    {
-        if (m_handle) {
-            mpg123_close(m_handle);
-            mpg123_delete(m_handle);
-            m_handle = nullptr;
-        }
-    }
-
-    mpg123_handle *m_handle = nullptr;
-};
-
-// -------------------------------------------------------------- libsndfile
-
-class SndfileDecoder : public Decoder
-{
-public:
-    ~SndfileDecoder() override
-    {
-        if (m_file)
-            sf_close(m_file);
-    }
-
-    bool open(const QString &path) override
-    {
-        SF_INFO info{};
-        m_file = sf_open(QFile::encodeName(path).constData(), SFM_READ, &info);
-        if (!m_file) {
-            m_error = QString::fromUtf8(sf_strerror(nullptr));
-            return false;
-        }
-        // Integer files are scaled to [-1, 1].
-        sf_command(m_file, SFC_SET_NORM_FLOAT, nullptr, SF_TRUE);
-        m_rate = info.samplerate;
-        m_channels = info.channels;
-        m_totalFrames = info.frames > 0 ? (long long)info.frames : -1;
-        m_seekable = info.seekable;
-        return m_rate > 0 && m_channels > 0;
-    }
-
-    long read(float *out, long frames) override
-    {
-        return m_file ? long(sf_readf_float(m_file, out, frames)) : 0;
-    }
-
-    bool seek(long long frame) override
-    {
-        return m_file && m_seekable && sf_seek(m_file, sf_count_t(frame), SEEK_SET) >= 0;
-    }
-
-private:
-    SNDFILE *m_file = nullptr;
-    bool m_seekable = false;
-};
-
-QString latin1OrUtf8(const char *s)
-{
-    if (!s)
-        return {};
-    QByteArray raw(s);
     auto decoder = QStringDecoder(QStringDecoder::Utf8);
     QString text = decoder(raw);
     if (decoder.hasError())
@@ -170,164 +57,462 @@ QString latin1OrUtf8(const char *s)
     return text.trimmed();
 }
 
-QString fromMpgString(const mpg123_string *s)
+QString dictValue(AVDictionary *dict, const char *key)
 {
-    if (!s || !s->p || s->fill == 0)
-        return {};
-    return QString::fromUtf8(s->p, int(s->fill) - 1).trimmed();
-}
-
-QString fromFixed(const char *s, int len)
-{
-    QByteArray raw(s, len);
-    const int nul = raw.indexOf('\0');
-    if (nul >= 0)
-        raw.truncate(nul);
-    return QString::fromLatin1(raw).trimmed();
-}
-
-void addTag(QStringList &tags, const char *label, const QString &value)
-{
-    if (!value.isEmpty())
-        tags << QStringLiteral("%1: %2").arg(QLatin1String(label), value);
-}
-
-AudioInfo probeMpeg(const QString &path, bool withTags, bool fullScan)
-{
-    AudioInfo info;
-    initMpg123();
-    int err = MPG123_OK;
-    mpg123_handle *h = mpg123_new(nullptr, &err);
-    if (!h) {
-        info.error = QString::fromUtf8(mpg123_plain_strerror(err));
-        return info;
-    }
-    mpg123_param(h, MPG123_FLAGS, MPG123_GAPLESS | MPG123_QUIET, 0.);
-    if (mpg123_open(h, QFile::encodeName(path).constData()) != MPG123_OK) {
-        info.error = QString::fromUtf8(mpg123_strerror(h));
-        mpg123_delete(h);
-        return info;
-    }
-    long rate = 0;
-    int channels = 0, enc = 0;
-    if (mpg123_getformat(h, &rate, &channels, &enc) != MPG123_OK) {
-        info.error = QObject::tr("File is not an audio file.");
-        mpg123_close(h);
-        mpg123_delete(h);
-        return info;
-    }
-    if (fullScan)
-        mpg123_scan(h);
-    mpg123_frameinfo fi{};
-    mpg123_info(h, &fi);
-    static const char *versions[] = {"1", "2", "2.5"};
-    info.format = QStringLiteral("MPEG %1 Layer %2")
-                      .arg(QLatin1String(versions[qBound(0, int(fi.version), 2)]))
-                      .arg(QString(QLatin1Char('I')).repeated(qBound(1, fi.layer, 3)));
-    if (fi.vbr != MPG123_CBR)
-        info.format += QStringLiteral(" VBR");
-    info.sampleRate = int(rate);
-    info.channels = channels;
-    info.bitrate = fi.vbr == MPG123_ABR ? fi.abr_rate : fi.bitrate;
-    const off_t len = mpg123_length(h);
-    if (len > 0 && rate > 0)
-        info.seconds = double(len) / double(rate);
-    if (info.seconds > 0 && fi.vbr != MPG123_CBR) {
-        const qint64 bytes = QFileInfo(path).size();
-        info.bitrate = int(bytes * 8 / info.seconds / 1000.0);
-    }
-
-    if (withTags) {
-        // Reading a little forces the parser past ID3v2 at the start of the file.
-        unsigned char buf[4096];
-        size_t done = 0;
-        mpg123_read(h, buf, sizeof buf, &done);
-        mpg123_id3v1 *v1 = nullptr;
-        mpg123_id3v2 *v2 = nullptr;
-        if (mpg123_id3(h, &v1, &v2) == MPG123_OK) {
-            if (v2) {
-                info.tags << QStringLiteral("ID3v2.%1").arg(v2->version);
-                addTag(info.tags, "Title", fromMpgString(v2->title));
-                addTag(info.tags, "Artist", fromMpgString(v2->artist));
-                addTag(info.tags, "Album", fromMpgString(v2->album));
-                addTag(info.tags, "Year", fromMpgString(v2->year));
-                addTag(info.tags, "Genre", fromMpgString(v2->genre));
-                for (size_t i = 0; i < v2->texts; ++i) {
-                    const mpg123_text &t = v2->text[i];
-                    const QByteArray id(t.id, 4);
-                    if (id == "TRCK")
-                        addTag(info.tags, "Track", fromMpgString(&t.text));
-                    else if (id == "TCOM")
-                        addTag(info.tags, "Composer", fromMpgString(&t.text));
-                    else if (id == "TENC" || id == "TSSE")
-                        addTag(info.tags, "Encoder", fromMpgString(&t.text));
-                }
-                for (size_t i = 0; i < v2->comments; ++i)
-                    addTag(info.tags, "Comment", fromMpgString(&v2->comment_list[i].text));
-            }
-            if (v1) {
-                if (!info.tags.isEmpty())
-                    info.tags << QString();
-                info.tags << QStringLiteral("ID3v1");
-                addTag(info.tags, "Title", fromFixed(v1->title, 30));
-                addTag(info.tags, "Artist", fromFixed(v1->artist, 30));
-                addTag(info.tags, "Album", fromFixed(v1->album, 30));
-                addTag(info.tags, "Year", fromFixed(v1->year, 4));
-                addTag(info.tags, "Comment", fromFixed(v1->comment, 30));
-            }
-        }
-    }
-    mpg123_close(h);
-    mpg123_delete(h);
-    info.ok = true;
-    return info;
-}
-
-AudioInfo probeSndfile(const QString &path, bool withTags)
-{
-    AudioInfo info;
-    SF_INFO sfi{};
-    SNDFILE *f = sf_open(QFile::encodeName(path).constData(), SFM_READ, &sfi);
-    if (!f) {
-        info.error = QString::fromUtf8(sf_strerror(nullptr));
-        return info;
-    }
-    SF_FORMAT_INFO major{};
-    major.format = sfi.format & SF_FORMAT_TYPEMASK;
-    sf_command(nullptr, SFC_GET_FORMAT_INFO, &major, sizeof major);
-    SF_FORMAT_INFO sub{};
-    sub.format = sfi.format & SF_FORMAT_SUBMASK;
-    sf_command(nullptr, SFC_GET_FORMAT_INFO, &sub, sizeof sub);
-    info.format = QString::fromUtf8(major.name ? major.name : "Unknown format");
-    if (sub.name)
-        info.format += QStringLiteral(" (%1)").arg(QString::fromUtf8(sub.name));
-    info.sampleRate = sfi.samplerate;
-    info.channels = sfi.channels;
-    if (sfi.frames > 0 && sfi.samplerate > 0) {
-        info.seconds = double(sfi.frames) / sfi.samplerate;
-        info.bitrate = int(QFileInfo(path).size() * 8 / info.seconds / 1000.0);
-    }
-    if (withTags) {
-        static const struct { int id; const char *label; } fields[] = {
-            {SF_STR_TITLE, "Title"},     {SF_STR_ARTIST, "Artist"},   {SF_STR_ALBUM, "Album"},
-            {SF_STR_TRACKNUMBER, "Track"}, {SF_STR_DATE, "Date"},     {SF_STR_GENRE, "Genre"},
-            {SF_STR_COMMENT, "Comment"}, {SF_STR_SOFTWARE, "Encoder"}, {SF_STR_COPYRIGHT, "Copyright"},
-        };
-        for (const auto &field : fields)
-            addTag(info.tags, field.label, latin1OrUtf8(sf_get_string(f, field.id)));
-    }
-    sf_close(f);
-    info.ok = true;
-    return info;
+    const AVDictionaryEntry *e = av_dict_get(dict, key, nullptr, 0);
+    return e && e->value ? decodeText(QByteArray(e->value)) : QString();
 }
 
 } // namespace
 
-std::unique_ptr<Decoder> Decoder::create(const QString &path)
+struct Decoder::Private
 {
-    if (isMpeg(path))
-        return std::make_unique<Mpg123Decoder>();
-    return std::make_unique<SndfileDecoder>();
+    AVFormatContext *fmt = nullptr;
+    AVCodecContext *codec = nullptr;
+    SwrContext *swr = nullptr;
+    AVPacket *pkt = nullptr;
+    AVFrame *frame = nullptr;
+    int streamIndex = -1;
+    int outRate = 0;
+    int nativeRate = 0;
+    long long total = -1;
+    long long produced = 0;   // output frames returned so far
+    bool trimToTotal = false; // container length is exact, cut the encoder padding
+    bool stream = false;
+    bool seekable = false;
+
+    // Current resampler input, to notice format changes inside a stream.
+    int swrFormat = -1, swrRate = 0, swrChannels = 0;
+    quint64 swrMask = 0;
+
+    std::vector<float> pending; // converted stereo samples not yet returned
+    size_t pendingPos = 0;
+    bool sentFlush = false;
+    bool eof = false;
+    bool failed = false;
+    QString error;
+
+    double seekTarget = -1;     // seconds; drop decoded audio before it
+    long long dropFrames = 0;
+
+    std::shared_ptr<std::atomic_bool> abort = std::make_shared<std::atomic_bool>(false);
+    std::atomic<qint64> lastProgress{0}; // streams: when audio last arrived
+    bool stalled = false;
+
+    // FFmpeg reconnects to a dropped stream forever; stop after a while.
+    static int interruptCallback(void *opaque)
+    {
+        auto *p = static_cast<Private *>(opaque);
+        if (p->abort->load())
+            return 1;
+        if (p->stream && p->lastProgress.load() && nowMs() - p->lastProgress.load() > kStreamStallMs) {
+            p->stalled = true;
+            return 1;
+        }
+        return 0;
+    }
+    QString name, title;
+    bool metaChanged = false;
+    int packetCounter = 0;
+
+    ~Private() { close(); }
+
+    void close()
+    {
+        swr_free(&swr);
+        avcodec_free_context(&codec);
+        if (fmt)
+            avformat_close_input(&fmt);
+        av_packet_free(&pkt);
+        av_frame_free(&frame);
+    }
+
+    AVStream *st() const { return fmt->streams[streamIndex]; }
+
+    bool setupResampler(const AVFrame *f)
+    {
+#if BILLY_CH_LAYOUT
+        const int channels = f->ch_layout.nb_channels;
+        const quint64 mask = f->ch_layout.order == AV_CHANNEL_ORDER_NATIVE ? f->ch_layout.u.mask : 0;
+#else
+        const int channels = f->channels;
+        const quint64 mask = f->channel_layout;
+#endif
+        if (swr && f->format == swrFormat && f->sample_rate == swrRate && channels == swrChannels && mask == swrMask)
+            return true;
+        swr_free(&swr);
+        swrFormat = f->format;
+        swrRate = f->sample_rate;
+        swrChannels = channels;
+        swrMask = mask;
+        if (channels <= 0 || f->sample_rate <= 0)
+            return false;
+#if BILLY_CH_LAYOUT
+        AVChannelLayout in{};
+        if (f->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC)
+            av_channel_layout_default(&in, channels);
+        else
+            av_channel_layout_copy(&in, &f->ch_layout);
+        AVChannelLayout out{};
+        av_channel_layout_default(&out, 2);
+        const int ret = swr_alloc_set_opts2(&swr, &out, AV_SAMPLE_FMT_FLT, outRate, &in, AVSampleFormat(f->format),
+                                            f->sample_rate, 0, nullptr);
+        av_channel_layout_uninit(&in);
+        av_channel_layout_uninit(&out);
+        if (ret < 0)
+            return false;
+#else
+        const qint64 inLayout = mask ? qint64(mask) : av_get_default_channel_layout(channels);
+        swr = swr_alloc_set_opts(nullptr, AV_CH_LAYOUT_STEREO, AV_SAMPLE_FMT_FLT, outRate, inLayout,
+                                 AVSampleFormat(f->format), f->sample_rate, 0, nullptr);
+        if (!swr)
+            return false;
+#endif
+        if (channels == 1) {
+            // Mono goes to both speakers at full level (swr would use -3 dB).
+            const double matrix[2] = {1.0, 1.0};
+            swr_set_matrix(swr, matrix, 1);
+        }
+        if (swr_init(swr) < 0) {
+            swr_free(&swr);
+            return false;
+        }
+        return true;
+    }
+
+    void appendConverted(const uint8_t **in, int inSamples)
+    {
+        const int capacity = swr_get_out_samples(swr, inSamples) + 32;
+        if (capacity <= 0)
+            return;
+        const size_t old = pending.size();
+        pending.resize(old + size_t(capacity) * 2);
+        uint8_t *out = reinterpret_cast<uint8_t *>(pending.data() + old);
+        const int n = swr_convert(swr, &out, capacity, in, inSamples);
+        pending.resize(old + size_t(qMax(0, n)) * 2);
+        if (dropFrames > 0 && n > 0) {
+            const long long k = qMin<long long>(dropFrames, n);
+            pending.erase(pending.begin() + long(old), pending.begin() + long(old + size_t(k) * 2));
+            dropFrames -= k;
+        }
+    }
+
+    void convertFrame()
+    {
+        if (!setupResampler(frame))
+            return;
+        if (seekTarget >= 0) {
+            const int64_t ts = frame->best_effort_timestamp;
+            if (ts != AV_NOPTS_VALUE) {
+                const int64_t start = st()->start_time != AV_NOPTS_VALUE ? st()->start_time : 0;
+                const double pos = double(ts - start) * av_q2d(st()->time_base);
+                if (seekTarget > pos)
+                    dropFrames = (long long)std::llround((seekTarget - pos) * outRate);
+            }
+            seekTarget = -1;
+        }
+        appendConverted(const_cast<const uint8_t **>(frame->extended_data), frame->nb_samples);
+    }
+
+    void pollMetadata()
+    {
+        // Shoutcast/Icecast "ICY" metadata of MP3/AAC streams.
+        if (fmt->pb) {
+            uint8_t *value = nullptr;
+            if (av_opt_get(fmt->pb, "icy_metadata_packet", AV_OPT_SEARCH_CHILDREN, &value) >= 0 && value) {
+                const QByteArray packet(reinterpret_cast<const char *>(value));
+                av_free(value);
+                const int start = packet.indexOf("StreamTitle='");
+                if (start >= 0) {
+                    const int from = start + 13;
+                    int end = packet.indexOf("';", from);
+                    if (end < 0)
+                        end = packet.lastIndexOf('\'');
+                    const QString t = decodeText(packet.mid(from, end > from ? end - from : 0));
+                    if (t != title) {
+                        title = t;
+                        metaChanged = true;
+                    }
+                }
+            }
+        }
+        // Ogg streams update their Vorbis comments instead.
+        if ((fmt->event_flags & AVFMT_EVENT_FLAG_METADATA_UPDATED)
+            || (st()->event_flags & AVSTREAM_EVENT_FLAG_METADATA_UPDATED)) {
+            fmt->event_flags &= ~AVFMT_EVENT_FLAG_METADATA_UPDATED;
+            st()->event_flags &= ~AVSTREAM_EVENT_FLAG_METADATA_UPDATED;
+            QString t = dictValue(st()->metadata, "title");
+            QString a = dictValue(st()->metadata, "artist");
+            if (t.isEmpty()) {
+                t = dictValue(fmt->metadata, "title");
+                a = dictValue(fmt->metadata, "artist");
+            }
+            if (!a.isEmpty() && !t.isEmpty())
+                t = a + QStringLiteral(" - ") + t;
+            if (!t.isEmpty() && t != title) {
+                title = t;
+                metaChanged = true;
+            }
+        }
+    }
+
+    // Decodes the next frame into 'pending'. Returns false at the end.
+    bool decodeMore()
+    {
+        while (true) {
+            int ret = avcodec_receive_frame(codec, frame);
+            if (ret == 0) {
+                convertFrame();
+                av_frame_unref(frame);
+                return true;
+            }
+            if (ret == AVERROR_EOF) {
+                // Drain the resampler.
+                if (swr)
+                    appendConverted(nullptr, 0);
+                eof = true;
+                return pending.size() > pendingPos;
+            }
+            if (ret != AVERROR(EAGAIN)) {
+                error = ffError(ret);
+                failed = true;
+                eof = true;
+                return false;
+            }
+            if (sentFlush) {
+                eof = true;
+                return false;
+            }
+            ret = av_read_frame(fmt, pkt);
+            if (ret < 0) {
+                if (abort->load()) {
+                    error = QObject::tr("Aborted.");
+                    failed = true;
+                } else if (stream || stalled) {
+                    error = QObject::tr("Error: Lost connection");
+                    failed = true;
+                } else if (ret != AVERROR_EOF && !(fmt->pb && avio_feof(fmt->pb))) {
+                    error = ffError(ret);
+                    failed = true;
+                }
+                avcodec_send_packet(codec, nullptr);
+                sentFlush = true;
+                continue;
+            }
+            if (pkt->stream_index != streamIndex) {
+                av_packet_unref(pkt);
+                continue;
+            }
+            if (stream && (++packetCounter % 16) == 0)
+                pollMetadata();
+            ret = avcodec_send_packet(codec, pkt);
+            av_packet_unref(pkt);
+            // A damaged packet is skipped, like any player does.
+            if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_INVALIDDATA) {
+                error = ffError(ret);
+                failed = true;
+                eof = true;
+                return false;
+            }
+        }
+    }
+};
+
+Decoder::Decoder() : d(std::make_unique<Private>()) {}
+Decoder::~Decoder() = default;
+
+bool Decoder::isUrl(const QString &location)
+{
+    const int sep = location.indexOf(QLatin1String("://"));
+    return sep > 0 && !location.startsWith(QLatin1String("file://"), Qt::CaseInsensitive);
+}
+
+bool Decoder::open(const QString &location, int outputRate)
+{
+    initFfmpeg();
+    d->close();
+    d->stream = isUrl(location);
+
+    d->fmt = avformat_alloc_context();
+    d->fmt->interrupt_callback.callback = &Private::interruptCallback;
+    d->fmt->interrupt_callback.opaque = d.get();
+    d->lastProgress = d->stream ? nowMs() : 0;
+
+    AVDictionary *opts = nullptr;
+    if (d->stream) {
+        av_dict_set(&opts, "icy", "1", 0);
+        av_dict_set(&opts, "reconnect", "1", 0);
+        av_dict_set(&opts, "reconnect_streamed", "1", 0);
+        av_dict_set(&opts, "reconnect_on_network_error", "1", 0);
+        av_dict_set(&opts, "reconnect_delay_max", "10", 0);
+        av_dict_set(&opts, "rw_timeout", "15000000", 0);
+        av_dict_set(&opts, "user_agent", "Billy/" BILLY_VERSION, 0);
+        d->fmt->max_analyze_duration = 2 * AV_TIME_BASE;
+    }
+    const QByteArray loc = d->stream ? location.toUtf8() : QFile::encodeName(location);
+    int ret = avformat_open_input(&d->fmt, loc.constData(), nullptr, &opts);
+    av_dict_free(&opts);
+    if (ret < 0) {
+        d->fmt = nullptr; // freed by avformat_open_input
+        d->error = d->stream ? QObject::tr("Error opening URL: %1").arg(ffError(ret))
+                             : (QFileInfo::exists(location) ? QObject::tr("Unknown file format.")
+                                                            : QObject::tr("File not found."));
+        return false;
+    }
+    if ((ret = avformat_find_stream_info(d->fmt, nullptr)) < 0) {
+        d->error = ffError(ret);
+        return false;
+    }
+    d->streamIndex = av_find_best_stream(d->fmt, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (d->streamIndex < 0) {
+        d->error = QObject::tr("File is not an audio file.");
+        return false;
+    }
+    for (unsigned i = 0; i < d->fmt->nb_streams; ++i)
+        if (int(i) != d->streamIndex)
+            d->fmt->streams[i]->discard = AVDISCARD_ALL; // e.g. cover art
+    AVStream *st = d->st();
+    const AVCodec *codec = avcodec_find_decoder(st->codecpar->codec_id);
+    if (!codec) {
+        d->error = QObject::tr("Unsupported file format.");
+        return false;
+    }
+    d->codec = avcodec_alloc_context3(codec);
+    avcodec_parameters_to_context(d->codec, st->codecpar);
+    d->codec->pkt_timebase = st->time_base;
+    if ((ret = avcodec_open2(d->codec, codec, nullptr)) < 0) {
+        d->error = ffError(ret);
+        return false;
+    }
+    d->nativeRate = d->codec->sample_rate;
+    if (d->nativeRate <= 0) {
+        d->error = QObject::tr("File has illegal sample rate.");
+        return false;
+    }
+    d->outRate = outputRate > 0 ? outputRate : d->nativeRate;
+    d->pkt = av_packet_alloc();
+    d->frame = av_frame_alloc();
+    d->seekable = !d->stream && d->fmt->pb && (d->fmt->pb->seekable & AVIO_SEEKABLE_NORMAL);
+
+    double seconds = -1;
+    if (!d->stream) {
+        if (st->duration != AV_NOPTS_VALUE && st->duration > 0)
+            seconds = double(st->duration) * av_q2d(st->time_base);
+        else if (d->fmt->duration != AV_NOPTS_VALUE && d->fmt->duration > 0)
+            seconds = double(d->fmt->duration) / AV_TIME_BASE;
+    }
+    d->total = seconds > 0 ? (long long)std::llround(seconds * d->outRate) : -1;
+    d->produced = 0;
+    // MP4/M4A edit lists give the exact length, but FFmpeg only applies the
+    // start of it (encoder delay). Cutting at the length removes the padding.
+    const char *demuxer = d->fmt->iformat ? d->fmt->iformat->name : "";
+    d->trimToTotal = d->total > 0 && (std::strstr(demuxer, "mp4") || std::strstr(demuxer, "mov"));
+
+    if (d->stream) {
+        uint8_t *headers = nullptr;
+        if (d->fmt->pb && av_opt_get(d->fmt->pb, "icy_metadata_headers", AV_OPT_SEARCH_CHILDREN, &headers) >= 0
+            && headers) {
+            const QList<QByteArray> lines = QByteArray(reinterpret_cast<const char *>(headers)).split('\n');
+            av_free(headers);
+            for (const QByteArray &line : lines)
+                if (line.toLower().startsWith("icy-name:"))
+                    d->name = decodeText(line.mid(9));
+        }
+        if (d->name.isEmpty())
+            d->name = dictValue(d->fmt->metadata, "icy-name");
+        d->pollMetadata();
+        d->metaChanged = true;
+    }
+    return true;
+}
+
+long Decoder::read(float *out, long frames)
+{
+    if (!d->codec)
+        return 0;
+    if (d->trimToTotal)
+        frames = long(qBound(0LL, d->total - d->produced, (long long)frames));
+    long done = 0;
+    while (done < frames) {
+        const size_t available = (d->pending.size() - d->pendingPos) / 2;
+        if (available == 0) {
+            d->pending.clear();
+            d->pendingPos = 0;
+            if (d->eof || !d->decodeMore()) {
+                if (d->pending.empty())
+                    break;
+            }
+            continue;
+        }
+        const size_t n = std::min<size_t>(available, size_t(frames - done));
+        std::memcpy(out + done * 2, d->pending.data() + d->pendingPos, n * 2 * sizeof(float));
+        d->pendingPos += n * 2;
+        done += long(n);
+    }
+    d->produced += done;
+    if (done > 0 && d->stream)
+        d->lastProgress = nowMs();
+    return done;
+}
+
+bool Decoder::seek(double seconds)
+{
+    if (!d->codec || !d->seekable)
+        return false;
+    AVStream *st = d->st();
+    const int64_t start = st->start_time != AV_NOPTS_VALUE ? st->start_time : 0;
+    // Start decoding a bit earlier: MP3 frames depend on the previous ones (bit
+    // reservoir), so the first frames after a jump are broken. The extra audio
+    // is dropped again below.
+    const double preroll = 0.2;
+    const int64_t ts = start + int64_t(qMax(0.0, seconds - preroll) / av_q2d(st->time_base));
+    if (av_seek_frame(d->fmt, d->streamIndex, ts, AVSEEK_FLAG_BACKWARD) < 0)
+        return false;
+    avcodec_flush_buffers(d->codec);
+    swr_free(&d->swr);
+    d->pending.clear();
+    d->pendingPos = 0;
+    d->eof = false;
+    d->sentFlush = false;
+    d->failed = false;
+    d->seekTarget = seconds; // sample accurate: drop what lies before
+    d->produced = (long long)std::llround(seconds * d->outRate);
+    d->dropFrames = 0;
+    return true;
+}
+
+int Decoder::sampleRate() const { return d->outRate; }
+int Decoder::nativeRate() const { return d->nativeRate; }
+long long Decoder::totalFrames() const { return d->total; }
+bool Decoder::isStream() const { return d->stream; }
+QString Decoder::errorString() const { return d->error; }
+bool Decoder::failed() const { return d->failed; }
+std::shared_ptr<std::atomic_bool> Decoder::abortFlag() const { return d->abort; }
+
+int Decoder::bitrate() const
+{
+    if (!d->codec)
+        return 0;
+    const int64_t br = d->st()->codecpar->bit_rate > 0 ? d->st()->codecpar->bit_rate : d->fmt->bit_rate;
+    return br > 0 ? int(br / 1000) : 0;
+}
+
+QString Decoder::codecName() const
+{
+    if (!d->codec)
+        return {};
+    const AVCodecDescriptor *desc = avcodec_descriptor_get(d->codec->codec_id);
+    return desc ? QString::fromUtf8(desc->name).toUpper() : QString();
+}
+
+bool Decoder::takeMetadataChange(QString &name, QString &title)
+{
+    if (!d->metaChanged)
+        return false;
+    d->metaChanged = false;
+    name = d->name;
+    title = d->title;
+    return true;
 }
 
 namespace Audio {
@@ -335,10 +520,12 @@ namespace Audio {
 const QStringList &supportedExtensions()
 {
     static const QStringList exts = {
-        QStringLiteral("mp3"), QStringLiteral("mp2"),  QStringLiteral("mp1"),
-        QStringLiteral("wav"), QStringLiteral("ogg"),  QStringLiteral("oga"),
-        QStringLiteral("flac"), QStringLiteral("opus"), QStringLiteral("aif"),
-        QStringLiteral("aiff"),
+        QStringLiteral("mp3"),  QStringLiteral("mp2"),  QStringLiteral("mp1"), QStringLiteral("mpa"),
+        QStringLiteral("wav"),  QStringLiteral("ogg"),  QStringLiteral("oga"), QStringLiteral("opus"),
+        QStringLiteral("flac"), QStringLiteral("aif"),  QStringLiteral("aiff"), QStringLiteral("aifc"),
+        QStringLiteral("m4a"),  QStringLiteral("m4b"),  QStringLiteral("aac"), QStringLiteral("ac3"),
+        QStringLiteral("wma"),  QStringLiteral("ape"),  QStringLiteral("wv"),  QStringLiteral("mpc"),
+        QStringLiteral("mka"),  QStringLiteral("tta"),  QStringLiteral("caf"),
     };
     return exts;
 }
@@ -357,21 +544,74 @@ QString fileDialogFilter()
     for (const QString &ext : supportedExtensions())
         all << QStringLiteral("*.") + ext;
     return QObject::tr("All supported music files (%1)").arg(all.join(QLatin1Char(' ')))
-        + QStringLiteral(";;") + QObject::tr("WAVE files (*.wav)")
         + QStringLiteral(";;") + QObject::tr("MPEG files (*.mp3 *.mp2 *.mp1)")
+        + QStringLiteral(";;") + QObject::tr("WAVE files (*.wav)")
         + QStringLiteral(";;") + QObject::tr("OGG Vorbis / Opus files (*.ogg *.oga *.opus)")
         + QStringLiteral(";;") + QObject::tr("FLAC Lossless files (*.flac)")
+        + QStringLiteral(";;") + QObject::tr("AAC / ALAC files (*.m4a *.m4b *.aac)")
         + QStringLiteral(";;") + QObject::tr("All files (*)");
 }
 
-AudioInfo probe(const QString &path, bool withTags, bool fullScan)
+AudioInfo probe(const QString &path, bool withTags)
 {
+    initFfmpeg();
+    AudioInfo info;
     if (!QFileInfo::exists(path)) {
-        AudioInfo info;
         info.error = QObject::tr("File not found.");
         return info;
     }
-    return isMpeg(path) ? probeMpeg(path, withTags, fullScan) : probeSndfile(path, withTags);
+    AVFormatContext *fmt = nullptr;
+    if (avformat_open_input(&fmt, QFile::encodeName(path).constData(), nullptr, nullptr) < 0) {
+        info.error = QObject::tr("Unknown file format.");
+        return info;
+    }
+    // The header is enough for the length of most files; analyse only when needed.
+    if (withTags || fmt->duration == AV_NOPTS_VALUE)
+        avformat_find_stream_info(fmt, nullptr);
+    const int index = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (index < 0) {
+        info.error = QObject::tr("File is not an audio file.");
+        avformat_close_input(&fmt);
+        return info;
+    }
+    const AVStream *st = fmt->streams[index];
+    const AVCodecParameters *par = st->codecpar;
+    const AVCodecDescriptor *desc = avcodec_descriptor_get(par->codec_id);
+    info.format = desc && desc->long_name ? QString::fromUtf8(desc->long_name) : QObject::tr("Unknown format");
+    if (fmt->iformat && fmt->iformat->long_name)
+        info.format += QStringLiteral(", ") + QString::fromUtf8(fmt->iformat->long_name);
+    info.sampleRate = par->sample_rate;
+#if BILLY_CH_LAYOUT
+    info.channels = par->ch_layout.nb_channels;
+#else
+    info.channels = par->channels;
+#endif
+    const int64_t br = par->bit_rate > 0 ? par->bit_rate : fmt->bit_rate;
+    info.bitrate = br > 0 ? int(br / 1000) : 0;
+    if (st->duration != AV_NOPTS_VALUE && st->duration > 0)
+        info.seconds = double(st->duration) * av_q2d(st->time_base);
+    else if (fmt->duration != AV_NOPTS_VALUE && fmt->duration > 0)
+        info.seconds = double(fmt->duration) / AV_TIME_BASE;
+
+    if (withTags) {
+        static const struct { const char *key; const char *label; } fields[] = {
+            {"title", "Title"},       {"artist", "Artist"},     {"album_artist", "Album artist"},
+            {"album", "Album"},       {"track", "Track"},       {"disc", "Disc"},
+            {"date", "Date"},         {"genre", "Genre"},       {"composer", "Composer"},
+            {"encoder", "Encoder"},   {"comment", "Comment"},   {"copyright", "Copyright"},
+            {"lyrics", "Lyrics"},
+        };
+        for (const auto &f : fields) {
+            QString v = dictValue(fmt->metadata, f.key);
+            if (v.isEmpty())
+                v = dictValue(st->metadata, f.key);
+            if (!v.isEmpty())
+                info.tags << QStringLiteral("%1: %2").arg(QLatin1String(f.label), v);
+        }
+    }
+    avformat_close_input(&fmt);
+    info.ok = true;
+    return info;
 }
 
 QString formatTime(double seconds, bool tenths)

@@ -17,8 +17,9 @@ Q_LOGGING_CATEGORY(lcEngine, "billy.engine", QtInfoMsg)
 
 namespace {
 constexpr long kBlockFrames = 4096;
-constexpr int kSinkBufferMs = 200;
+constexpr int kSinkBufferMs = 400;
 constexpr int kPollMs = 20;
+constexpr int kStreamReserveMs = 1500;
 } // namespace
 
 // QIODevice that the QAudioSink pulls PCM data from.
@@ -161,6 +162,8 @@ AudioEngine::~AudioEngine()
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_quit = true;
+        if (m_abort)
+            *m_abort = true;
     }
     m_cond.notify_all();
     m_thread.join();
@@ -169,12 +172,15 @@ AudioEngine::~AudioEngine()
     m_outputThread->wait();
 }
 
-void AudioEngine::play(const QString &path, quint64 id, double startSeconds)
+void AudioEngine::play(const QString &path, quint64 id, double startSeconds, int outputRate)
 {
     m_paths.insert(id, path);
     {
         std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_abort)
+            *m_abort = true; // e.g. a stream that is still connecting
         m_cmdOpen = true;
+        m_cmdRate = outputRate;
         m_cmdStop = false;
         m_cmdPath = path;
         m_cmdId = id;
@@ -236,6 +242,8 @@ void AudioEngine::stop()
 {
     {
         std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_abort)
+            *m_abort = true;
         m_cmdOpen = false;
         m_cmdStop = true;
         flushLocked();
@@ -260,7 +268,13 @@ void AudioEngine::seek(double seconds)
     if (path.isEmpty())
         return;
     const State before = m_state;
-    play(path, m_currentId, qMax(0.0, seconds));
+    int rate;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        rate = m_playingRate;
+    }
+    // Keep the output rate, so that seeking never reopens the device.
+    play(path, m_currentId, qMax(0.0, seconds), rate);
     if (before == Paused)
         pause();
 }
@@ -311,6 +325,12 @@ double AudioEngine::position() const
     return double(frame) / m_playingRate;
 }
 
+bool AudioEngine::isBuffering() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_buffering && m_state == Playing;
+}
+
 double AudioEngine::duration() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -343,6 +363,7 @@ void AudioEngine::flushLocked()
     m_drained = false;
     m_wantRate = 0;
     m_peakL = m_peakR = 0;
+    m_buffering = false;
 }
 
 void AudioEngine::requestSink(int rate)
@@ -378,11 +399,15 @@ void AudioEngine::closeSink()
 
 void AudioEngine::poll()
 {
-    quint64 seq, id;
+    quint64 seq, id, metaSeq;
     int wantRate, frontRate = 0;
     bool drained;
+    QString metaName, metaTitle;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
+        metaSeq = m_metaSeq;
+        metaName = m_metaName;
+        metaTitle = m_metaTitle;
         seq = m_playingSeq;
         id = m_playingId;
         wantRate = m_wantRate;
@@ -396,6 +421,10 @@ void AudioEngine::poll()
         m_currentSeq = seq;
         m_currentId = id;
         emit trackStarted(id);
+    }
+    if (metaSeq != m_seenMetaSeq) {
+        m_seenMetaSeq = metaSeq;
+        emit streamMetadata(id, metaName, metaTitle);
     }
 
     if (m_state == Stopped)
@@ -436,11 +465,23 @@ qint64 AudioEngine::render(char *data, qint64 maxBytes)
     float *outF = reinterpret_cast<float *>(data);
     qint16 *outI = reinterpret_cast<qint16 *>(data);
 
-    while (produced < frames && !m_chunks.empty()) {
+    // Streams start, and continue after an underrun, only with a reserve.
+    if (m_buffering && (m_chunks.empty() || m_chunks.front().stream)) {
+        const long long reserve = (long long)m_sinkRate * kStreamReserveMs / 1000;
+        if (m_queuedFrames >= reserve || m_decoderEof || m_cmdOpen)
+            m_buffering = false;
+    }
+    while (!m_buffering && produced < frames && !m_chunks.empty()) {
         Chunk &c = m_chunks.front();
         if (c.rate != m_sinkRate) {
             m_wantRate = c.rate;
             break;
+        }
+        if (c.hasMeta) {
+            c.hasMeta = false;
+            m_metaName = c.metaName;
+            m_metaTitle = c.metaTitle;
+            ++m_metaSeq;
         }
         const size_t available = c.samples.size() / 2 - c.offset;
         const size_t n = std::min<size_t>(available, size_t(frames - produced));
@@ -465,15 +506,23 @@ qint64 AudioEngine::render(char *data, qint64 maxBytes)
         m_playingFrame = c.trackFrame + (long long)c.offset;
         m_playingTotal = c.totalFrames;
         m_playingRate = c.rate;
+        m_playingStream = c.stream;
         if (c.offset * 2 >= c.samples.size()) {
             m_queuedFrames -= (long long)(c.samples.size() / 2);
             m_chunks.pop_front();
         }
     }
+    if (m_buffering != m_loggedBuffering) {
+        m_loggedBuffering = m_buffering;
+        qCDebug(lcEngine) << "buffering" << m_buffering << "queued" << m_queuedFrames << "eof" << m_decoderEof;
+    }
     m_peakL = peakL;
     m_peakR = peakR;
     if (m_chunks.empty() && m_endOfStream && !m_cmdOpen)
         m_drained = true;
+    else if (m_chunks.empty() && m_playingStream && !m_decoderEof)
+        m_buffering = true; // the network could not keep up
+
     lock.unlock();
     m_cond.notify_all();
 
@@ -485,12 +534,12 @@ qint64 AudioEngine::render(char *data, qint64 maxBytes)
 
 void AudioEngine::decoderLoop()
 {
-    std::vector<float> raw;
     std::unique_lock<std::mutex> lock(m_mutex);
     while (!m_quit) {
         if (m_cmdStop) {
             m_cmdStop = false;
             auto old = std::move(m_decoder);
+            m_abort.reset();
             m_decodingId = 0;
             m_decoderEof = true;
             m_endOfStream = true;
@@ -505,6 +554,7 @@ void AudioEngine::decoderLoop()
         QString openPath;
         quint64 openId = 0, openSeq = 0;
         double openSeconds = 0;
+        int openRate = 0;
         bool explicitOpen = false;
         if (m_cmdOpen) {
             m_cmdOpen = false;
@@ -513,10 +563,12 @@ void AudioEngine::decoderLoop()
             openId = m_cmdId;
             openSeq = m_cmdSeq;
             openSeconds = m_cmdSeconds;
+            openRate = m_cmdRate;
         } else if (m_decoderEof && m_decodingId && m_nextId && m_nextAfterId == m_decodingId) {
             openPath = m_nextPath;
             openId = m_nextId;
             openSeq = ++m_seqCounter;
+            openRate = m_chainRate; // resample to keep the output stream running
             m_nextId = 0;
         }
         if (openId) {
@@ -526,30 +578,45 @@ void AudioEngine::decoderLoop()
             m_decoderEof = true;
             m_endOfStream = false;
             auto old = std::move(m_decoder);
+            auto dec = std::make_unique<Decoder>();
+            m_abort = dec->abortFlag();
             lock.unlock();
             old.reset();
-            std::unique_ptr<Decoder> dec = Decoder::create(openPath);
             QString err;
-            if (!dec->open(openPath)) {
+            if (!dec->open(openPath, openRate)) {
                 err = dec->errorString();
                 if (err.isEmpty())
                     err = tr("File can't be opened.");
                 dec.reset();
             } else if (openSeconds > 0) {
-                dec->seek((long long)(openSeconds * dec->sampleRate()));
+                dec->seek(openSeconds);
             }
             lock.lock();
             if (gen != m_generation || m_cmdOpen || m_cmdStop || m_quit)
                 continue; // superseded while opening
             m_decoder = std::move(dec);
             m_decoderEof = !m_decoder;
-            m_decodeFrame = m_decoder ? (long long)(openSeconds * m_decoder->sampleRate()) : 0;
-            if (m_decoder && explicitOpen) {
-                m_playingRate = m_decoder->sampleRate();
-                m_playingTotal = m_decoder->totalFrames();
-                m_playingFrame = m_decodeFrame;
+            m_decodeFrame = 0;
+            if (m_decoder) {
+                m_chainRate = m_decoder->sampleRate();
+                m_decodeFrame = (long long)(openSeconds * m_decoder->sampleRate());
+                if (explicitOpen) {
+                    m_playingRate = m_decoder->sampleRate();
+                    m_playingTotal = m_decoder->totalFrames();
+                    m_playingFrame = m_decodeFrame;
+                    m_buffering = m_decoder->isStream();
+                }
+                if (m_decoder->isStream()) {
+                    const QString codec = m_decoder->codecName();
+                    const int kbps = m_decoder->bitrate();
+                    QMetaObject::invokeMethod(
+                        this, [this, openId, codec, kbps] { emit streamInfo(openId, codec, kbps); }, Qt::QueuedConnection);
+                }
+            } else {
+                m_abort.reset();
             }
-            qCDebug(lcEngine) << "decoding" << openId << openPath << (explicitOpen ? "(explicit)" : "(gapless)") << err;
+            qCDebug(lcEngine) << "decoding" << openId << openPath << (explicitOpen ? "(explicit)" : "(gapless)")
+                              << (m_decoder ? m_decoder->nativeRate() : 0) << "->" << m_chainRate << err;
             if (!err.isEmpty())
                 QMetaObject::invokeMethod(this, [this, openId, err] { emit error(openId, err); }, Qt::QueuedConnection);
             QMetaObject::invokeMethod(this, [this, openId] { emit decodingStarted(openId); }, Qt::QueuedConnection);
@@ -561,32 +628,12 @@ void AudioEngine::decoderLoop()
         if (m_decoder && !m_decoderEof && m_queuedFrames < maxFrames) {
             Decoder *dec = m_decoder.get();
             const unsigned gen = m_generation;
-            const int ch = dec->channels();
             lock.unlock();
-            raw.resize(size_t(kBlockFrames) * size_t(ch));
-            const long n = dec->read(raw.data(), kBlockFrames);
             Chunk chunk;
-            if (n > 0) {
-                chunk.samples.resize(size_t(n) * 2);
-                float *out = chunk.samples.data();
-                for (long i = 0; i < n; ++i) {
-                    const float *f = raw.data() + size_t(i) * size_t(ch);
-                    float l, r;
-                    if (ch == 1) {
-                        l = r = f[0];
-                    } else if (ch == 2) {
-                        l = f[0];
-                        r = f[1];
-                    } else {
-                        // Simple downmix: front channels plus centre/rear at -3 dB.
-                        const float c = f[2] * 0.7071f;
-                        l = f[0] + c + (ch > 4 ? f[4] * 0.7071f : 0.f);
-                        r = f[1] + c + (ch > 5 ? f[5] * 0.7071f : 0.f);
-                    }
-                    out[i * 2] = l;
-                    out[i * 2 + 1] = r;
-                }
-            }
+            chunk.samples.resize(size_t(kBlockFrames) * 2);
+            const long n = dec->read(chunk.samples.data(), kBlockFrames);
+            chunk.samples.resize(size_t(qMax(0L, n)) * 2);
+            chunk.hasMeta = dec->takeMetadataChange(chunk.metaName, chunk.metaTitle);
             lock.lock();
             if (gen != m_generation || m_decoder.get() != dec)
                 continue;
@@ -594,6 +641,12 @@ void AudioEngine::decoderLoop()
                 m_decoderEof = true;
                 if (!(m_nextId && m_nextAfterId == m_decodingId))
                     m_endOfStream = true;
+                if (dec->failed()) {
+                    const quint64 id = m_decodingId;
+                    const QString err = dec->errorString();
+                    qCDebug(lcEngine) << "decoder error" << id << err;
+                    QMetaObject::invokeMethod(this, [this, id, err] { emit error(id, err); }, Qt::QueuedConnection);
+                }
                 continue;
             }
             chunk.trackId = m_decodingId;
@@ -601,6 +654,7 @@ void AudioEngine::decoderLoop()
             chunk.rate = rate;
             chunk.trackFrame = m_decodeFrame;
             chunk.totalFrames = dec->totalFrames();
+            chunk.stream = dec->isStream();
             m_decodeFrame += n;
             m_queuedFrames += n;
             m_drained = false;

@@ -16,6 +16,7 @@ class Mpris;
 class PlaylistModel;
 class PlaylistView;
 class QActionGroup;
+class QNetworkAccessManager;
 class QLabel;
 class QMenu;
 class QSystemTrayIcon;
@@ -89,6 +90,11 @@ private:
                    std::function<void()> done = {});
     void cancelScan();
     void addFiles();
+    void addUrl();
+    void addStreams(const QStringList &urls, const QHash<QString, QString> &titles, bool play);
+    void resolveRemotePlaylist(const QUrl &url, bool play);
+    void showStreamInfo(int row);
+    void onStreamMetadata(quint64 id, const QString &name, const QString &title);
     void openPlaylist();
     void loadPlaylistFile(const QString &file, bool play = false);
     void savePlaylist();
@@ -173,5 +179,10 @@ private:
     std::shared_ptr<std::atomic_bool> m_scanCancel;
     std::shared_ptr<std::atomic_bool> m_timeCancel;
     QStringList m_clipboard;
+    QNetworkAccessManager *m_net = nullptr;
+    QString m_streamTitle;   // "Artist - Title" announced by the playing stream
+    QString m_streamCodec;
+    int m_streamKbps = 0;
+    bool m_wasBuffering = false;
     bool m_quitting = false;
 };
