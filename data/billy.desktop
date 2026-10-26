@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Billy
+GenericName=Audio Player
+Comment=No nonsense, gapless audio player that quickly plays entire folders
+Exec=billy %F
+Icon=billy
+Terminal=false
+Categories=AudioVideo;Audio;Player;Qt;
+MimeType=audio/mpeg;audio/x-mp3;audio/mp3;audio/x-wav;audio/wav;audio/ogg;audio/x-vorbis+ogg;audio/vorbis;audio/opus;audio/x-opus+ogg;audio/flac;audio/x-flac;audio/x-aiff;audio/x-mpegurl;audio/x-scpls;inode/directory;
+Keywords=music;mp3;flac;ogg;gapless;playlist;
