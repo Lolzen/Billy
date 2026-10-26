@@ -257,6 +257,10 @@ void AudioEngine::stop()
     closeSink();
     m_currentId = 0;
     m_currentSeq = 0;
+    if (m_formatSeq) {
+        m_formatSeq = 0;
+        emit formatChanged(QString());
+    }
     setState(Stopped);
 }
 
@@ -402,9 +406,16 @@ void AudioEngine::poll()
     quint64 seq, id, metaSeq;
     int wantRate, frontRate = 0;
     bool drained;
-    QString metaName, metaTitle;
+    QString metaName, metaTitle, format;
+    bool haveFormat = false;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
+        for (const auto &f : m_formats) {
+            if (f.first == m_playingSeq) {
+                format = f.second;
+                haveFormat = true;
+            }
+        }
         metaSeq = m_metaSeq;
         metaName = m_metaName;
         metaTitle = m_metaTitle;
@@ -421,6 +432,10 @@ void AudioEngine::poll()
         m_currentSeq = seq;
         m_currentId = id;
         emit trackStarted(id);
+    }
+    if (seq && seq != m_formatSeq && haveFormat) {
+        m_formatSeq = seq;
+        emit formatChanged(format);
     }
     if (metaSeq != m_seenMetaSeq) {
         m_seenMetaSeq = metaSeq;
@@ -599,6 +614,9 @@ void AudioEngine::decoderLoop()
             m_decodeFrame = 0;
             if (m_decoder) {
                 m_chainRate = m_decoder->sampleRate();
+                m_formats.emplace_back(openSeq, m_decoder->formatDescription());
+                if (m_formats.size() > 8)
+                    m_formats.pop_front();
                 m_decodeFrame = (long long)(openSeconds * m_decoder->sampleRate());
                 if (explicitOpen) {
                     m_playingRate = m_decoder->sampleRate();

@@ -73,6 +73,7 @@ struct Decoder::Private
     AVPacket *pkt = nullptr;
     AVFrame *frame = nullptr;
     int streamIndex = -1;
+    QString location;
     int outRate = 0;
     int nativeRate = 0;
     long long total = -1;
@@ -331,6 +332,7 @@ bool Decoder::open(const QString &location, int outputRate)
 {
     initFfmpeg();
     d->close();
+    d->location = location;
     d->stream = isUrl(location);
 
     d->fmt = avformat_alloc_context();
@@ -503,6 +505,36 @@ QString Decoder::codecName() const
         return {};
     const AVCodecDescriptor *desc = avcodec_descriptor_get(d->codec->codec_id);
     return desc ? QString::fromUtf8(desc->name).toUpper() : QString();
+}
+
+QString Decoder::formatDescription() const
+{
+    if (!d->codec)
+        return {};
+    const AVCodecDescriptor *desc = avcodec_descriptor_get(d->codec->codec_id);
+    const QString codec = desc ? QString::fromUtf8(desc->name) : QString();
+    // Files are named after their type (MP3, OGG, M4A, ...), streams after the codec.
+    QString type = d->stream ? QString() : QFileInfo(d->location).suffix().toUpper();
+    if (type.isEmpty()) {
+        if (codec == QLatin1String("vorbis"))
+            type = QStringLiteral("OGG");
+        else if (codec.startsWith(QLatin1String("mp3")))
+            type = QStringLiteral("MP3");
+        else
+            type = codec.toUpper();
+    }
+#if BILLY_CH_LAYOUT
+    const int channels = d->codec->ch_layout.nb_channels;
+#else
+    const int channels = d->codec->channels;
+#endif
+    const QString layout = channels == 1   ? QStringLiteral("Mono")
+                           : channels == 2 ? QStringLiteral("Stereo")
+                                           : QStringLiteral("%1 Channels").arg(channels);
+    const int kbps = bitrate();
+    if (codec.startsWith(QLatin1String("pcm_")) || kbps <= 0)
+        return QStringLiteral("%1 %2 Hz %3").arg(type).arg(d->nativeRate).arg(layout);
+    return QStringLiteral("%1 %2 kbps %3").arg(type).arg(kbps).arg(layout);
 }
 
 bool Decoder::takeMetadataChange(QString &name, QString &title)

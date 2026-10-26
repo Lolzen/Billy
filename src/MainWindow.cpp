@@ -100,6 +100,7 @@ MainWindow::MainWindow()
     connect(m_engine, &AudioEngine::error, this, &MainWindow::onEngineError);
     connect(m_engine, &AudioEngine::stateChanged, this, &MainWindow::onStateChanged);
     connect(m_engine, &AudioEngine::streamMetadata, this, &MainWindow::onStreamMetadata);
+    connect(m_engine, &AudioEngine::formatChanged, m_statusFormat, &QLabel::setText);
     connect(m_engine, &AudioEngine::streamInfo, this, [this](quint64, const QString &codec, int kbps) {
         m_streamCodec = codec;
         m_streamKbps = kbps;
@@ -246,22 +247,21 @@ void MainWindow::createWidgets()
     layout->addWidget(m_view, 1);
     setCentralWidget(central);
 
-    // Status bar: volume | files | play mode | messages
-    m_statusVolume = new QLabel(this);
+    // Status bar: files | play mode | messages | format of the playing file
     m_statusFiles = new QLabel(this);
     m_statusMode = new QLabel(this);
     m_statusText = new QLabel(this);
-    m_statusVolume->setMinimumWidth(48);
+    m_statusFormat = new QLabel(this);
     m_statusFiles->setMinimumWidth(75);
     m_statusMode->setMinimumWidth(75);
     m_statusMode->setCursor(Qt::PointingHandCursor);
     m_statusMode->setToolTip(tr("Click to change the play mode"));
     m_statusMode->installEventFilter(this);
-    m_statusVolume->installEventFilter(this);
-    statusBar()->addWidget(m_statusVolume);
+    m_statusFormat->setMinimumWidth(125);
     statusBar()->addWidget(m_statusFiles);
     statusBar()->addWidget(m_statusMode);
     statusBar()->addWidget(m_statusText, 1);
+    statusBar()->addPermanentWidget(m_statusFormat);
     statusBar()->setSizeGripEnabled(true);
     m_statusClear = new QTimer(this);
     m_statusClear->setSingleShot(true);
@@ -744,9 +744,9 @@ void MainWindow::updateTitle()
 
 void MainWindow::updateStatusBar()
 {
-    m_statusVolume->setText(QStringLiteral("%1 %").arg(m_settings.volume));
     m_volumeLabel->setText(QStringLiteral("%1 %").arg(m_settings.volume));
-    m_statusFiles->setText(tr("%n File(s)", nullptr, m_model->count()));
+    const int files = m_model->count();
+    m_statusFiles->setText(files == 1 ? tr("1 File") : tr("%1 Files").arg(files));
     m_statusMode->setText(Settings::playModeName(m_settings.playMode));
 }
 
@@ -1868,18 +1868,12 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     if (watched == m_topPanel && event->type() == QEvent::Resize)
         layoutTopPanel();
 
-    // Click on the play mode panel cycles the play mode; on the volume panel resets softmute.
-    if (event->type() == QEvent::MouseButtonPress) {
-        if (watched == m_statusMode) {
-            auto *me = static_cast<QMouseEvent *>(event);
-            const int dir = me->button() == Qt::RightButton ? 4 : 1;
-            setPlayMode(PlayMode((int(m_settings.playMode) + dir) % 5));
-            return true;
-        }
-        if (watched == m_statusVolume) {
-            softmute();
-            return true;
-        }
+    // Click on the play mode panel cycles the play mode (right click: backwards).
+    if (event->type() == QEvent::MouseButtonPress && watched == m_statusMode) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        const int dir = me->button() == Qt::RightButton ? 4 : 1;
+        setPlayMode(PlayMode((int(m_settings.playMode) + dir) % 5));
+        return true;
     }
 
     // Dragging the volume label (or the level meters) up and down.

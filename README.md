@@ -49,6 +49,8 @@ und alle Rechte bleiben beim Autor.
 * F5 sucht neue Dateien in den geöffneten Ordnern (sortiert nach Dateidatum) und entfernt verschwundene
 * Gesamtspielzeit der Auswahl (Ctrl+Alt+T), Sleep-Timer (Alt+T, optional mit Herunterfahren),
   „Copy to MP3 player“ (Ctrl+M)
+* Statusleiste wie im Original: Anzahl Dateien, Playmode (klickbar) und rechts Format, Bitrate und Kanäle
+  des gerade hörbaren Titels (z. B. „MP3 192 kbps Stereo“, „WAV 44100 Hz Stereo“)
 * Tray-Icon (F11) mit dem Original-Menü (100 %/60 %/30 %/0 %, Play, Pause …)
 * Farbschemata und Schrift für die Playlist (`*.billyscheme`)
 * Automatisches Fortsetzen beim Start (optional), Single-Instance: Dateien aus dem Dateimanager landen im

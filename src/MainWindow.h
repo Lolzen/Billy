@@ -146,10 +146,10 @@ private:
     QList<QToolButton *> m_playButtons;
 
     // Status bar
-    QLabel *m_statusVolume;
     QLabel *m_statusFiles;
     QLabel *m_statusMode;
     QLabel *m_statusText;
+    QLabel *m_statusFormat;
     QString m_sleepText;
     QTimer *m_statusClear;
 

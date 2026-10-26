@@ -32,6 +32,8 @@ public:
     bool isStream() const;
     int bitrate() const;       // kbps, 0 if unknown
     QString codecName() const;
+    // Status bar text like the original: "MP3 192 kbps Stereo", "WAV 44100 Hz Stereo".
+    QString formatDescription() const;
     QString errorString() const;
     bool failed() const;       // read() ended because of an error, not EOF
 

@@ -77,6 +77,8 @@ signals:
     // Internet streams: station name / current title, reported when playback reaches them.
     void streamMetadata(quint64 id, const QString &name, const QString &title);
     void streamInfo(quint64 id, const QString &codec, int kbps);
+    // Format of the track that is audible now ("MP3 192 kbps Stereo"), empty when stopped.
+    void formatChanged(const QString &text);
 
 private:
     friend class SinkWorker;
@@ -132,6 +134,7 @@ private:
     quint64 m_nextId = 0;
     quint64 m_nextAfterId = 0;
 
+    std::deque<std::pair<quint64, QString>> m_formats; // seq -> format text of recent tracks
     std::deque<Chunk> m_chunks;
     long long m_queuedFrames = 0;
     unsigned m_generation = 0;
@@ -170,5 +173,6 @@ private:
     int m_bufferMs = 3000;
     int m_drainTicks = 0;
     quint64 m_seenMetaSeq = 0;
+    quint64 m_formatSeq = 0;   // seq whose format is shown
     QHash<quint64, QString> m_paths;
 };
