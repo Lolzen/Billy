@@ -73,7 +73,22 @@ QIcon icon(Glyph glyph, const QColor &color)
 
 QIcon appIcon()
 {
-    QIcon icon(QStringLiteral(":/billy.svg"));
+    // Billy's icon: a light green square with a dark border, centred. Like the
+    // original it fills half of a 16px icon and 3/8 of the larger ones.
+    QIcon icon;
+    for (int size : {16, 22, 24, 32, 48, 64, 128, 256}) {
+        QPixmap pm(size, size);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        int side = size <= 24 ? size / 2 : size * 3 / 8;
+        side += (size - side) % 2; // keep it centred
+        const int border = qMax(1, size / 32);
+        const int x = (size - side) / 2;
+        p.fillRect(x, x, side, side, QColor(0x06, 0x06, 0x06));
+        p.fillRect(x + border, x + border, side - 2 * border, side - 2 * border, QColor(0xcd, 0xff, 0xb4));
+        p.end();
+        icon.addPixmap(pm);
+    }
     return icon;
 }
 
