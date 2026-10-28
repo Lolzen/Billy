@@ -5,6 +5,8 @@
 #include <QListView>
 #include <QStyledItemDelegate>
 
+#include <functional>
+
 class PlaylistDelegate : public QStyledItemDelegate
 {
 public:
@@ -25,6 +27,9 @@ public:
 
     void setScheme(const Scheme &scheme);
     QList<int> selectedRows() const;
+    QStyledItemDelegate *classicDelegate() const { return m_delegate; }
+    // Painted on top of the rows (the skin's album covers).
+    void setOverlay(std::function<void(QPainter &)> overlay) { m_overlay = std::move(overlay); }
     void selectRows(const QList<int> &rows, int current = -1);
 
 signals:
@@ -34,7 +39,9 @@ signals:
 
 protected:
     void keyPressEvent(QKeyEvent *e) override;
+    void paintEvent(QPaintEvent *e) override;
 
 private:
     PlaylistDelegate *m_delegate;
+    std::function<void(QPainter &)> m_overlay;
 };

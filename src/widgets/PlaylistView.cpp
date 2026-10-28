@@ -85,6 +85,15 @@ void PlaylistView::setScheme(const Scheme &scheme)
     viewport()->update();
 }
 
+void PlaylistView::paintEvent(QPaintEvent *e)
+{
+    QListView::paintEvent(e);
+    if (m_overlay) {
+        QPainter p(viewport());
+        m_overlay(p);
+    }
+}
+
 QList<int> PlaylistView::selectedRows() const
 {
     QList<int> rows;

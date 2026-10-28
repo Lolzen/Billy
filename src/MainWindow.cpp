@@ -15,6 +15,7 @@
 #include "widgets/SheepProgress.h"
 #include "PlayStats.h"
 #include "audio/Spectrum.h"
+#include "skin/SkinPlaylistDelegate.h"
 #include "skin/SkinView.h"
 #ifdef BILLY_HAVE_DBUS
 #include "Mpris.h"
@@ -1754,6 +1755,7 @@ void MainWindow::createSkin()
 {
     m_skin = new SkinView(m_stack);
     m_stack->addWidget(m_skin);
+    m_skinDelegate = new SkinPlaylistDelegate(m_model, this);
     m_spectrum = std::make_unique<Spectrum>(2048);
     m_scopeBuffer.resize(size_t(m_spectrum->fftSize()));
     m_skin->setVolume(m_settings.volume);
@@ -1824,6 +1826,9 @@ void MainWindow::applyLook(bool alternative, bool initial)
             "QScrollBar::handle:vertical { background: rgba(255,255,255,70); border-radius: 3px; min-height: 24px; }"
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
             "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }"));
+        m_view->setItemDelegate(m_skinDelegate);
+        m_view->setUniformItemSizes(false); // album headers make some rows taller
+        m_view->setOverlay([this](QPainter &p) { m_skinDelegate->paintCovers(p, m_view); });
         m_skin->setPlaylistWidget(m_view);
         m_stack->setCurrentWidget(m_skin);
         for (QAction *a : menuBar()->actions())
@@ -1835,10 +1840,13 @@ void MainWindow::applyLook(bool alternative, bool initial)
         if (!m_settings.skinGeometry.isEmpty())
             restoreGeometry(m_settings.skinGeometry);
         else
-            resize(740, 330);
+            resize(700, 300); // the size of the original skin
         updateSkinInfo();
     } else {
         m_skin->setPlaylistWidget(nullptr);
+        m_view->setOverlay({});
+        m_view->setItemDelegate(m_view->classicDelegate());
+        m_view->setUniformItemSizes(true);
         for (QAction *a : menuBar()->actions())
             if (a->menu())
                 a->menu()->setStyleSheet(QString());
@@ -1943,6 +1951,14 @@ void MainWindow::updateSkinTick()
     if (dur > 0)
         time += QStringLiteral(" / ") + Audio::formatTime(dur);
     m_skin->setProgress(dur > 0 ? pos / dur : -1, time);
+    // Remaining time next to the playing item in the playlist.
+    m_skinDelegate->setRemaining(dur > 0 ? QStringLiteral("-") + Audio::formatTime(dur - pos) : Audio::formatTime(pos));
+    m_skinDelegate->setPaused(m_engine->state() == AudioEngine::Paused);
+    if (m_skin->page() == SkinView::PlaylistPage) {
+        const int row = m_model->currentRow();
+        if (row >= 0)
+            m_view->viewport()->update(m_view->visualRect(m_model->index(row)));
+    }
 
     if (m_engine->state() != AudioEngine::Playing)
         return;

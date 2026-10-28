@@ -27,6 +27,8 @@ set(BILLY_SOURCES
   src/audio/Spectrum.cpp
   src/PlayStats.cpp
   src/skin/SkinView.cpp
+  src/skin/PixelFont.cpp
+  src/skin/SkinPlaylistDelegate.cpp
   src/widgets/SheepProgress.cpp
   src/widgets/PlaylistView.cpp
   src/widgets/Glyphs.cpp

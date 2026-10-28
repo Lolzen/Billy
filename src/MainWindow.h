@@ -18,6 +18,7 @@ class PlaylistView;
 class QActionGroup;
 class QStackedWidget;
 class QVBoxLayout;
+class SkinPlaylistDelegate;
 class SkinView;
 class Spectrum;
 class QNetworkAccessManager;
@@ -194,6 +195,7 @@ private:
     QWidget *m_classicPage = nullptr;
     QVBoxLayout *m_classicLayout = nullptr;
     SkinView *m_skin = nullptr;
+    SkinPlaylistDelegate *m_skinDelegate = nullptr;
     std::unique_ptr<Spectrum> m_spectrum;
     std::vector<float> m_scopeBuffer;
     QAction *m_lookAction = nullptr;

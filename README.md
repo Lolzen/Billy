@@ -63,21 +63,26 @@ Alle Tastenkürzel zeigt F1.
 
 ### Alternativer Look
 
-Unter *View → Alternative look* (Ctrl+Shift+A) gibt es eine zweite, rahmenlose Oberfläche:
+Unter *View → Alternative look* (Ctrl+Shift+A) gibt es eine zweite, rahmenlose Oberfläche. Vorbild für Aufbau
+und Maße ist der foobar2000-Skin *foo_Hydrangea* von lassekongo83; die Farben folgen einer dunklen Variante mit
+Lichtstreifen. Grafiken des Skins werden nicht verwendet, alles ist mit QPainter gezeichnet.
 
 ![Alternativer Look](docs/screenshot-alternative.png)
+![Alternativer Look, Playlist](docs/screenshot-alternative-playlist.png)
 
-
-* Hintergrund aus vertikalen Lichtstreifen (Blau → Türkis → Grün), alles mit QPainter gezeichnet, ohne Bilddateien
-* **Info-Seite**: das Cover hängt an einer Schnur an einem Nagel (eingebettetes Bild oder `cover.jpg`,
+* Fenster 700×300 wie der Skin, Hintergrund aus vertikalen Lichtstreifen (Blau → Türkis → Grün)
+* **Info-Seite**: das Cover (175 px) hängt an einer Schnur an einem Nagel (eingebettetes Bild oder `cover.jpg`,
   `folder.jpg` usw. im Ordner). Daneben stehen Album, Interpret, Titel (aus den Tags, sonst aus den
   Ordnernamen), „Track played N times“, „Last played …“ und das Format („192 kbps MP3 CBR | 4.85 MB“).
   Bei Internetradio stehen dort Sender, Interpret und Titel aus den Stream-Metadaten.
-* **Playlist-Seite**: die Playlist auf einer dunklen Glasfläche
-* **Spektrum-Analyzer**: 2048er FFT auf den gerade hörbaren Samples (mit der Ausgabelatenz verrechnet),
-  logarithmische Bänder. Die Balken bestehen aus Strichsegmenten, die nach oben deckender werden.
-* Transparente Progressbar und Bedienleiste: ⏮ ⏯ ⏭ ■ ⏏ (Ordner öffnen), INFO, PLAYLIST, Zeit, Lautstärke
-  (ziehen oder Mausrad), CLOSE, MINIMIZE. Das **Alien** rechts unten (oder ein Rechtsklick) öffnet das Menü.
+* **Spektrum-Analyzer** auf der Info-Seite: 2048er FFT auf den gerade hörbaren Samples (mit der
+  Ausgabelatenz verrechnet), logarithmische Bänder. Die Balken bestehen aus Strichsegmenten, die nach oben
+  deckender werden.
+* **Playlist-Seite**: Gruppen je Album mit Kopfzeile (Album und Interpret aus den Ordnernamen, so müssen keine
+  Tags gelesen werden), Nummernspalte, ▶/❚❚ und Restzeit beim laufenden Titel, Cover neben jeder Gruppe
+* Transparente Seekbar und Knopfreihe mit Pixelschrift: ⏮ ⏯ ⏭ ■ ⏏ (Ordner öffnen), INFO, PLAYLIST, Zeit,
+  Lautstärke (ziehen oder Mausrad), CLOSE, MINIMIZE. Die **Alien-Katze** rechts unten (oder ein Rechtsklick)
+  öffnet das Menü.
 * Fenster an einer freien Stelle verschieben, an den Kanten in der Größe ändern; jeder Look merkt sich seine
   eigene Fenstergröße.
 
