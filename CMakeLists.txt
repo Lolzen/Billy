@@ -47,6 +47,8 @@ if(Qt6DBus_FOUND)
   list(APPEND BILLY_SOURCES src/Mpris.cpp)
 endif()
 
+qt_add_resources(BILLY_SOURCES data/skin/skin.qrc)
+
 add_executable(billy ${BILLY_SOURCES})
 target_include_directories(billy PRIVATE src)
 target_compile_definitions(billy PRIVATE BILLY_VERSION="${PROJECT_VERSION}")

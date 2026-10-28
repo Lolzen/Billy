@@ -1,0 +1,7 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+  <qresource prefix="/skin">
+    <file>aliencat.png</file>
+    <file>aliencath.png</file>
+  </qresource>
+</RCC>

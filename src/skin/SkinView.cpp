@@ -24,8 +24,8 @@ constexpr int kSeekY = 12;      // seek bar: y and height
 constexpr int kSeekH = 10;
 constexpr int kPanelY = 22;     // info/playlist panel
 constexpr int kBarH = 22;       // button row
-constexpr int kBarStep = 7;     // spectrum: bar width + gap
-constexpr int kSegment = 3;     // spectrum: segment height + gap
+constexpr int kBarStep = 6;     // spectrum: bar width (5) + gap (1)
+constexpr int kSegment = 2;     // spectrum: segment line (1) + gap (1)
 constexpr int kSpectrumH = 42;
 constexpr int kResizeBorder = 5;
 
@@ -172,12 +172,13 @@ void SkinView::setProgress(double fraction, const QString &time)
 
 int SkinView::spectrumBands() const
 {
-    return qMax(8, m_spectrumRect.width() / kBarStep);
+    return qMax(8, m_spectrumRect.width() / kBarStep) / 2 * 2; // even: two mirrored halves
 }
 
-void SkinView::setSpectrum(const std::vector<float> &levels)
+void SkinView::setSpectrum(const std::vector<float> &left, const std::vector<float> &right)
 {
-    m_target = levels;
+    m_targetLeft = left;
+    m_targetRight = right;
     if (!m_animation.isActive() && isVisible())
         m_animation.start();
 }
@@ -209,20 +210,42 @@ void SkinView::showMessage(const QString &text, int ms)
 void SkinView::animate()
 {
     const size_t n = size_t(spectrumBands());
-    if (m_bars.size() != n)
+    const size_t half = n / 2;
+    if (m_bars.size() != n) {
         m_bars.assign(n, 0.f);
+        m_peaks.assign(n, 0.f);
+        m_peakHold.assign(n, 0);
+    }
     bool moving = false;
     for (size_t i = 0; i < n; ++i) {
-        // Map the analyser bands onto the visible bars.
+        // Mirrored from the middle: low frequencies in the centre, the left
+        // channel goes to the left, the right channel to the right.
+        const bool leftSide = i < half;
+        const size_t band = leftSide ? half - 1 - i : i - half;
+        const std::vector<float> &levels = leftSide ? m_targetLeft : m_targetRight;
         float target = 0.f;
-        if (!m_target.empty())
-            target = m_target[std::min(m_target.size() - 1, i * m_target.size() / n)];
+        if (!levels.empty())
+            target = levels[std::min(levels.size() - 1, band * levels.size() / half)];
+        // The outer bars react less and less to the loudness.
+        const float d = float(band) / float(std::max<size_t>(1, half - 1));
+        target *= 1.f - 0.6f * std::pow(d, 1.5f);
+
         float &bar = m_bars[i];
         if (target > bar)
             bar += (target - bar) * 0.7f; // quick rise
         else
             bar = std::max(target, bar - 0.03f); // slow fall
-        moving |= bar > 0.001f || target > 0.001f;
+        // Peak caps stay a moment, then sink slowly.
+        float &peak = m_peaks[i];
+        if (bar >= peak) {
+            peak = bar;
+            m_peakHold[i] = 12;
+        } else if (m_peakHold[i] > 0) {
+            --m_peakHold[i];
+        } else {
+            peak = std::max(bar, peak - 0.012f);
+        }
+        moving |= bar > 0.001f || target > 0.001f || peak > 0.001f;
     }
     if (!moving)
         m_animation.stop();
@@ -273,8 +296,7 @@ void SkinView::layoutParts()
     m_buttons.append({Info, QRect(x, y, 44, kBarH), QStringLiteral("INFO"), tr("Info")});
     x += 44;
     m_buttons.append({Playlist, QRect(x, y, 44, kBarH), QStringLiteral("PLAYLIST"), tr("Playlist")});
-    // The alien cat is a bit bigger than the row and sticks out above it.
-    m_buttons.append({Menu, QRect(w - 36, y - 9, 30, 29), QString(), tr("Menu")});
+    m_buttons.append({Menu, QRect(w - 32, y, 25, 23), QString(), tr("Menu")});
     m_buttons.append({Minimize, QRect(w - 80, y, 37, kBarH), QStringLiteral("MINIMIZE"), QString()});
     m_buttons.append({Close, QRect(w - 120, y, 31, kBarH), QStringLiteral("CLOSE"), QString()});
     const int vw = PixelFont::textWidth(QStringLiteral("100%")) + 12;
@@ -363,14 +385,17 @@ void SkinView::paintProgress(QPainter &p)
     // A glass strip: dark edges, light lines, glossy upper and darker lower half.
     // The played part is the same glass in light grey and less transparent.
     const QRect r = m_progressRect;
-    static const int track[10] = {0, 98, 45, 45, 45, 12, 12, 12, 98, 0};
-    static const int played[10] = {60, 186, 168, 168, 168, 158, 158, 158, 186, 60};
+    // The played part leaves the outer row free at the top and the bottom.
+    static const int track[10] = {24, 120, 68, 68, 68, 36, 36, 36, 120, 24};
+    static const int played[10] = {0, 190, 172, 172, 172, 160, 160, 160, 190, 0};
     const int fillW = m_progress >= 0 ? int(r.width() * std::clamp(m_progress, 0.0, 1.0)) : 0;
     for (int y = 0; y < r.height(); ++y) {
         const int row = std::min(9, y * 10 / r.height());
-        if (fillW > 0)
-            p.fillRect(QRect(r.left(), r.top() + y, fillW, 1), grey(played[row], 190));
-        p.fillRect(QRect(r.left() + fillW, r.top() + y, r.width() - fillW, 1), grey(track[row], 128));
+        const bool edge = y == 0 || y == r.height() - 1;
+        const int split = edge ? 0 : fillW;
+        if (split > 0)
+            p.fillRect(QRect(r.left(), r.top() + y, split, 1), grey(played[row], 195));
+        p.fillRect(QRect(r.left() + split, r.top() + y, r.width() - split, 1), grey(track[row], 128));
     }
 
     if (!m_message.isEmpty()) {
@@ -390,15 +415,6 @@ void SkinView::paintInfo(QPainter &p)
     }
     p.setRenderHint(QPainter::Antialiasing);
     const QRect c = m_coverRect;
-
-    // The picture hangs on a string from a nail (a 65x24 triangle).
-    const QPointF nail(c.center().x() + 0.5, c.top() - 24);
-    p.setPen(QPen(QColor(10, 10, 10, 220), 1.2));
-    p.drawLine(nail, QPointF(c.center().x() - 32, c.top()));
-    p.drawLine(nail, QPointF(c.center().x() + 33, c.top()));
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor(15, 15, 15));
-    p.drawEllipse(nail, 2.2, 2.2);
 
     p.setRenderHint(QPainter::Antialiasing, false);
     p.fillRect(c.adjusted(3, 3, 5, 5), QColor(0, 0, 0, 70)); // shadow
@@ -457,15 +473,20 @@ void SkinView::paintSpectrum(QPainter &p)
     const int bars = spectrumBands();
     for (int i = 0; i < bars; ++i) {
         const float level = i < int(m_bars.size()) ? m_bars[size_t(i)] : 0.f;
+        const float peak = i < int(m_peaks.size()) ? m_peaks[size_t(i)] : 0.f;
         const int lit = int(std::lround(level * segments));
         const int x = m_spectrumRect.left() + i * kBarStep;
         // The lowest segment always shows, as a dashed base line.
         for (int s = 0; s < std::max(lit, 1); ++s) {
-            const int y = m_spectrumRect.bottom() - s * kSegment - 1;
+            const int y = m_spectrumRect.bottom() - s * kSegment;
             // The higher, the less transparent.
-            const int alpha = lit == 0 ? 70 : int(60 + 195.0 * (s + 1) / segments);
-            p.fillRect(QRect(x, y, kBarStep - 2, kSegment - 1), QColor(240, 240, 240, alpha));
+            const int alpha = lit == 0 ? 60 : int(45 + 190.0 * (s + 1) / segments);
+            p.fillRect(QRect(x, y, kBarStep - 1, 1), QColor(235, 235, 235, alpha));
         }
+        // A white cap marks the recent peak.
+        const int cap = std::max(int(std::lround(peak * segments)), lit);
+        if (peak > 0.02f && cap < segments)
+            p.fillRect(QRect(x, m_spectrumRect.bottom() - cap * kSegment, kBarStep - 1, 1), QColor(255, 255, 255));
     }
 }
 
@@ -496,55 +517,10 @@ void SkinView::paintGlyph(QPainter &p, Button id, const QRect &r, const QColor &
 
 void SkinView::paintAlien(QPainter &p, const QRect &r, bool hover)
 {
-    // The "alien cat", designed on the skin's 25x22 grid and scaled to 'r':
-    // pointed ears, a wide head and big eyes slanting down to the nose.
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing);
-    p.translate(r.topLeft());
-    p.scale(r.width() / 25.0, r.height() / 22.0);
-
-    QPainterPath head;
-    head.moveTo(6.5, 0.3);                                // left ear tip
-    head.cubicTo(8.0, 1.8, 9.2, 3.6, 9.8, 5.2);           // inner side of the ear
-    head.quadTo(12.5, 4.4, 15.2, 5.2);                    // top of the head between the ears
-    head.cubicTo(15.8, 3.6, 17.0, 1.8, 18.5, 0.3);        // right ear tip
-    head.cubicTo(19.8, 3.0, 20.8, 5.6, 21.6, 8.0);        // outer side of the right ear
-    head.cubicTo(23.4, 10.5, 24.2, 14.5, 23.2, 17.6);     // right cheek
-    head.cubicTo(21.6, 20.6, 16.5, 22.0, 12.5, 22.0);     // chin
-    head.cubicTo(8.5, 22.0, 3.4, 20.6, 1.8, 17.6);
-    head.cubicTo(0.8, 14.5, 1.6, 10.5, 3.4, 8.0);         // left cheek
-    head.cubicTo(4.2, 5.6, 5.2, 3.0, 6.5, 0.3);
-    QLinearGradient g(0, 0, 0, 22);
-    const int a = hover ? 140 : 235; // like the original, it fades when hovered
-    g.setColorAt(0.0, grey(150, a));
-    g.setColorAt(0.5, grey(118, a));
-    g.setColorAt(1.0, grey(92, a));
-    p.setPen(QPen(grey(20, hover ? 110 : 190), 0.7));
-    p.setBrush(g);
-    p.drawPath(head);
-
-    // A soft shine on the forehead.
-    QRadialGradient shine(12.5, 8.5, 8.0);
-    shine.setColorAt(0, QColor(255, 255, 255, hover ? 40 : 60));
-    shine.setColorAt(1, QColor(255, 255, 255, 0));
-    p.setPen(Qt::NoPen);
-    p.setBrush(shine);
-    p.drawPath(head);
-
-    // Eyes: big almonds from the outer top to the nose.
-    p.setBrush(grey(242, hover ? 160 : 245));
-    for (int side : {-1, 1}) {
-        auto pt = [side](double x, double y) { return QPointF(12.5 + side * (12.5 - x), y); };
-        QPainterPath eye;
-        eye.moveTo(pt(3.2, 12.2));
-        eye.cubicTo(pt(6.5, 11.8), pt(10.8, 14.6), pt(11.4, 19.0));
-        eye.cubicTo(pt(8.0, 19.4), pt(3.4, 16.4), pt(3.2, 12.2));
-        p.drawPath(eye);
-    }
-    // Nose / mouth.
-    p.setBrush(grey(235, hover ? 120 : 200));
-    p.drawEllipse(QPointF(12.5, 20.4), 0.9, 0.7);
-    p.restore();
+    // The skin's own alien cat (on its glass tile), lighter when hovered.
+    static const QImage normal(QStringLiteral(":/skin/aliencat.png"));
+    static const QImage lit(QStringLiteral(":/skin/aliencath.png"));
+    p.drawImage(r.topLeft(), hover ? lit : normal);
 }
 
 void SkinView::paintBar(QPainter &p)
@@ -558,15 +534,16 @@ void SkinView::paintBar(QPainter &p)
         const bool active = (b.id == Info && m_page == InfoPage) || (b.id == Playlist && m_page == PlaylistPage);
         if (b.id == Menu)
             continue; // drawn last, it sticks out of the row
-        const bool tile = b.id != Close && b.id != Minimize && b.id != Volume;
+        const bool tile = b.id != Volume;
         if (tile) {
             // Glass tile with a light line on the left and a dark one on the right.
             paintGlass(p, b.rect, kTileGlass, hover ? 26 : active ? 10 : 0);
             p.fillRect(QRect(b.rect.left(), b.rect.top() + 1, 1, b.rect.height() - 1), grey(hover ? 96 : 70, 200));
             p.fillRect(QRect(b.rect.right(), b.rect.top() + 1, 1, b.rect.height() - 1), grey(22, 220));
         }
-        // Labels on the tiles are grey, the window buttons white; hover lights them up.
-        QColor color = tile ? grey(hover || active ? 235 : 178) : grey(hover ? 255 : 228);
+        // Labels are grey, the window buttons white; hover lights them up.
+        const bool window = b.id == Close || b.id == Minimize;
+        QColor color = window ? grey(hover ? 255 : 232) : tile ? grey(hover || active ? 235 : 178) : grey(hover ? 255 : 220);
         if (b.id == Volume) {
             const QString text = QStringLiteral("%1%").arg(m_volume);
             PixelFont::draw(p, b.rect.right() - PixelFont::textWidth(text), b.rect.top() + 9, text, color);

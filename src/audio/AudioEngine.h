@@ -67,9 +67,9 @@ public:
 
     // Peak levels (linear, 0..1) of the audio played since the last call.
     void takeLevels(float &left, float &right);
-    // The 'frames' mono samples (before volume) that are audible right now,
-    // for spectrum displays. Returns the sample rate, 0 if nothing plays.
-    int recentSamples(float *out, int frames) const;
+    // The 'frames' samples per channel (before volume) that are audible right
+    // now, for spectrum displays. Returns the sample rate, 0 if nothing plays.
+    int recentSamples(float *left, float *right, int frames) const;
 
 signals:
     void trackStarted(quint64 id);      // playback reached a new track (gapless change)
@@ -159,7 +159,7 @@ private:
     QString m_metaName, m_metaTitle;
     quint64 m_metaSeq = 0;
     float m_peakL = 0, m_peakR = 0;
-    std::vector<float> m_scope = std::vector<float>(1 << 15); // mono ring buffer
+    std::vector<float> m_scope = std::vector<float>(1 << 16); // stereo ring buffer (interleaved)
     quint64 m_scopeWritten = 0;
 
     std::atomic<float> m_gain{1.0f};

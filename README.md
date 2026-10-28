@@ -65,24 +65,25 @@ Alle Tastenkürzel zeigt F1.
 
 Unter *View → Alternative look* (Ctrl+Shift+A) gibt es eine zweite, rahmenlose Oberfläche. Vorbild für Aufbau
 und Maße ist der foobar2000-Skin *foo_Hydrangea* von lassekongo83; die Farben folgen einer dunklen Variante mit
-Lichtstreifen. Grafiken des Skins werden nicht verwendet, alles ist mit QPainter gezeichnet.
+Lichtstreifen. Bis auf die Alien-Katze (aus dem Skin, in Grau, siehe `data/skin/README.md`) ist alles mit
+QPainter gezeichnet.
 
 ![Alternativer Look](docs/screenshot-alternative.png)
 ![Alternativer Look, Playlist](docs/screenshot-alternative-playlist.png)
 
 * Fenster 700×300 wie der Skin, Hintergrund aus vertikalen Lichtstreifen (Blau → Türkis → Grün)
-* **Info-Seite**: das Cover (175 px) hängt an einer Schnur an einem Nagel (eingebettetes Bild oder `cover.jpg`,
-  `folder.jpg` usw. im Ordner). Daneben stehen Album, Interpret, Titel (aus den Tags, sonst aus den
+* **Info-Seite**: das Cover (175 px; eingebettetes Bild oder `cover.jpg`, `folder.jpg` usw. im Ordner). Daneben stehen Album, Interpret, Titel (aus den Tags, sonst aus den
   Ordnernamen), „Track played N times“, „Last played …“ und das Format („192 kbps MP3 CBR | 4.85 MB“).
   Bei Internetradio stehen dort Sender, Interpret und Titel aus den Stream-Metadaten.
-* **Spektrum-Analyzer** auf der Info-Seite: 2048er FFT auf den gerade hörbaren Samples (mit der
-  Ausgabelatenz verrechnet), logarithmische Bänder. Die Balken bestehen aus Strichsegmenten, die nach oben
-  deckender werden.
+* **Spektrum-Analyzer** auf der Info-Seite, wie im Original von der Mitte aus gespiegelt: tiefe Frequenzen in
+  der Mitte, der linke Kanal nach links, der rechte nach rechts; die äußeren Balken reagieren immer weniger auf
+  die Lautstärke. 2048er FFT pro Kanal auf den gerade hörbaren Samples (mit der Ausgabelatenz verrechnet),
+  logarithmische Bänder. Balken aus 1-px-Strichen, die nach oben deckender werden, mit fallenden Peak-Kappen.
 * **Playlist-Seite**: Gruppen je Album mit Kopfzeile (Album und Interpret aus den Ordnernamen, so müssen keine
   Tags gelesen werden), Nummernspalte, ▶/❚❚ und Restzeit beim laufenden Titel, Cover neben jeder Gruppe
 * Seekbar und Knopfreihe in Glas-Optik (heller Rand, glänzende obere und dunklere untere Hälfte) mit Pixelschrift: ⏮ ⏯ ⏭ ■ ⏏ (Ordner öffnen), INFO, PLAYLIST, Zeit,
-  Lautstärke (ziehen oder Mausrad), CLOSE, MINIMIZE. Die **Alien-Katze** rechts unten ragt über die Leiste
-  hinaus und öffnet das Menü (ein Rechtsklick auch).
+  Lautstärke (ziehen oder Mausrad), CLOSE, MINIMIZE. Die **Alien-Katze** rechts unten öffnet das Menü
+  (ein Rechtsklick auch).
 * Fenster an einer freien Stelle verschieben, an den Kanten in der Größe ändern; jeder Look merkt sich seine
   eigene Fenstergröße.
 

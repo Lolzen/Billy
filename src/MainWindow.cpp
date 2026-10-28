@@ -679,7 +679,7 @@ void MainWindow::onStateChanged()
     m_playButtons[1]->setDown(state == AudioEngine::Paused);
     m_skin->setPlaying(state == AudioEngine::Playing);
     if (state != AudioEngine::Playing)
-        m_skin->setSpectrum({});
+        m_skin->setSpectrum();
     if (state == AudioEngine::Stopped)
         m_skin->setProgress(-1, QString());
     if (state == AudioEngine::Stopped) {
@@ -1757,7 +1757,8 @@ void MainWindow::createSkin()
     m_stack->addWidget(m_skin);
     m_skinDelegate = new SkinPlaylistDelegate(m_model, this);
     m_spectrum = std::make_unique<Spectrum>(2048);
-    m_scopeBuffer.resize(size_t(m_spectrum->fftSize()));
+    m_scopeLeft.resize(size_t(m_spectrum->fftSize()));
+    m_scopeRight.resize(size_t(m_spectrum->fftSize()));
     m_skin->setVolume(m_settings.volume);
     m_skin->setPage(m_settings.skinPage == 1 ? SkinView::PlaylistPage : SkinView::InfoPage);
 
@@ -1962,9 +1963,13 @@ void MainWindow::updateSkinTick()
 
     if (m_engine->state() != AudioEngine::Playing)
         return;
-    const int rate = m_engine->recentSamples(m_scopeBuffer.data(), int(m_scopeBuffer.size()));
-    if (rate > 0)
-        m_skin->setSpectrum(m_spectrum->analyse(m_scopeBuffer.data(), rate, 64));
+    const int rate = m_engine->recentSamples(m_scopeLeft.data(), m_scopeRight.data(), int(m_scopeLeft.size()));
+    if (rate > 0) {
+        // Left channel on the left half, right channel on the right half.
+        const int bands = m_skin->spectrumBands() / 2;
+        m_skin->setSpectrum(m_spectrum->analyse(m_scopeLeft.data(), rate, bands),
+                            m_spectrum->analyse(m_scopeRight.data(), rate, bands));
+    }
 }
 
 void MainWindow::showSkinMenu(const QPoint &globalPos, bool anchored)

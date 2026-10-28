@@ -4,8 +4,8 @@
 #include <cmath>
 
 namespace {
-constexpr float kRange = 60.f;    // dB shown from the bottom to the top
-constexpr float kHeadroom = 6.f;  // a full bar is this much below full scale
+constexpr float kRange = 54.f;    // dB shown from the bottom to the top
+constexpr float kHeadroom = 15.f; // a full bar is this much below full scale
 }
 
 Spectrum::Spectrum(int fftSize) : m_size(fftSize), m_window(size_t(fftSize))
@@ -73,7 +73,8 @@ std::vector<float> Spectrum::analyse(const float *samples, int sampleRate, int b
         for (int k = k0; k < k1; ++k)
             power += re[size_t(k)] * re[size_t(k)] + im[size_t(k)] * im[size_t(k)];
         float dB = 10.f * std::log10(std::max(power / (reference * reference), 1e-12f));
-        levels[size_t(b)] = std::clamp((dB + kRange - kHeadroom) / kRange, 0.f, 1.f);
+        // -kHeadroom dB fills the bar, -(kHeadroom + kRange) dB leaves it empty.
+        levels[size_t(b)] = std::clamp((dB + kHeadroom + kRange) / kRange, 0.f, 1.f);
     }
     return levels;
 }

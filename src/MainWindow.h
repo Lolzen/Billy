@@ -197,7 +197,7 @@ private:
     SkinView *m_skin = nullptr;
     SkinPlaylistDelegate *m_skinDelegate = nullptr;
     std::unique_ptr<Spectrum> m_spectrum;
-    std::vector<float> m_scopeBuffer;
+    std::vector<float> m_scopeLeft, m_scopeRight;
     QAction *m_lookAction = nullptr;
     bool m_skinActive = false;
     QString m_statsLine;      // "Track played 8 times" of the current file

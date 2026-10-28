@@ -36,8 +36,10 @@ public:
     void setTrackInfo(const TrackInfo &info);
     // 'fraction' < 0: nothing to show (stopped or a stream).
     void setProgress(double fraction, const QString &time);
-    // Levels 0..1, one per band; an empty vector lets the bars fall.
-    void setSpectrum(const std::vector<float> &levels);
+    // Levels 0..1 per band of each channel (low frequencies first). They are
+    // shown mirrored from the middle: left channel to the left, right to the
+    // right. Empty vectors let the bars fall.
+    void setSpectrum(const std::vector<float> &left = {}, const std::vector<float> &right = {});
     int spectrumBands() const;
     void setPlaying(bool playing);
     void setVolume(int percent);
@@ -104,9 +106,11 @@ private:
     QString m_message;
     QTimer m_messageTimer;
 
-    // Spectrum: target levels from the engine, animated bar heights.
-    std::vector<float> m_target;
+    // Spectrum: target levels from the engine, animated bar heights, peak caps.
+    std::vector<float> m_targetLeft, m_targetRight;
     std::vector<float> m_bars;
+    std::vector<float> m_peaks;
+    std::vector<int> m_peakHold;
     QTimer m_animation;
 
     QImage m_background;

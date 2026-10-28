@@ -343,19 +343,21 @@ double AudioEngine::duration() const
     return double(m_playingTotal) / m_playingRate;
 }
 
-int AudioEngine::recentSamples(float *out, int frames) const
+int AudioEngine::recentSamples(float *left, float *right, int frames) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_sinkRate <= 0 || m_state != Playing)
         return 0;
-    const quint64 size = m_scope.size();
+    const quint64 size = m_scope.size() / 2; // frames in the ring
     frames = int(qMin<quint64>(quint64(frames), size / 2));
     // What leaves the speakers now was written 'latency' frames ago.
     const quint64 latency = quint64(qMax(0LL, m_latencyFrames.load()));
     const quint64 end = m_scopeWritten > latency ? m_scopeWritten - latency : 0;
     for (int i = 0; i < frames; ++i) {
         const quint64 pos = end + quint64(i) - quint64(frames);
-        out[i] = pos < end ? m_scope[pos & (size - 1)] : 0.f; // (wraps around before the start)
+        const bool valid = pos < end; // (wraps around before the start)
+        left[i] = valid ? m_scope[(pos & (size - 1)) * 2] : 0.f;
+        right[i] = valid ? m_scope[(pos & (size - 1)) * 2 + 1] : 0.f;
     }
     return m_sinkRate;
 }
@@ -518,9 +520,11 @@ qint64 AudioEngine::render(char *data, qint64 maxBytes)
         const size_t available = c.samples.size() / 2 - c.offset;
         const size_t n = std::min<size_t>(available, size_t(frames - produced));
         const float *in = c.samples.data() + c.offset * 2;
-        const size_t scopeMask = m_scope.size() - 1;
+        const size_t scopeMask = m_scope.size() / 2 - 1;
         for (size_t i = 0; i < n * 2; i += 2) {
-            m_scope[m_scopeWritten++ & scopeMask] = 0.5f * (in[i] + in[i + 1]);
+            const size_t slot = (m_scopeWritten++ & scopeMask) * 2;
+            m_scope[slot] = in[i];
+            m_scope[slot + 1] = in[i + 1];
             const float l = in[i] * gain, r = in[i + 1] * gain;
             peakL = std::max(peakL, std::fabs(l));
             peakR = std::max(peakR, std::fabs(r));
