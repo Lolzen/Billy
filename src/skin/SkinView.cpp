@@ -433,8 +433,6 @@ void SkinView::paintInfo(QPainter &p)
     const QRect c = m_coverRect;
 
     p.setRenderHint(QPainter::Antialiasing, false);
-    p.fillRect(c.adjusted(3, 3, 5, 5), QColor(0, 0, 0, 70)); // shadow
-    p.fillRect(c.adjusted(1, 1, 3, 3), QColor(0, 0, 0, 90));
     if (!m_info.cover.isNull()) {
         if (m_coverScaled.size() != c.size()) {
             // Fill the square, cropping a non-square picture in the middle.
@@ -550,7 +548,8 @@ void SkinView::paintBar(QPainter &p)
         const bool active = (b.id == Info && m_page == InfoPage) || (b.id == Playlist && m_page == PlaylistPage);
         if (b.id == Menu)
             continue; // drawn last, it sticks out of the row
-        const bool tile = b.id != Volume;
+        // CLOSE and MINIMIZE stand on the row itself, like in the reference.
+        const bool tile = b.id != Volume && b.id != Close && b.id != Minimize;
         if (tile) {
             // Glass tile with a light line on the left and a dark one on the right.
             paintGlass(p, b.rect, kTileGlass, hover ? 26 : active ? 10 : 0);
