@@ -4,7 +4,7 @@
 #include <cmath>
 
 namespace {
-constexpr float kRange = 54.f;    // dB shown from the bottom to the top
+constexpr float kRange = 35.f;    // dB shown from the bottom to the top (-50 .. -15 dB)
 constexpr float kHeadroom = 15.f; // a full bar is this much below full scale
 }
 

@@ -55,7 +55,7 @@ QString decodeText(const QByteArray &raw)
     QString text = decoder(raw);
     if (decoder.hasError())
         text = QString::fromLatin1(raw);
-    return text.trimmed();
+    return Audio::fixCyrillic(text.trimmed());
 }
 
 QString dictValue(AVDictionary *dict, const char *key)
@@ -704,6 +704,39 @@ QImage coverArt(const QString &path)
     if (!best.isEmpty())
         image.load(dir.filePath(best));
     return image;
+}
+
+QString fixCyrillic(const QString &text)
+{
+    // Tags written on Russian Windows systems hold cp1251 bytes, but are
+    // declared as Latin-1, so "Высшая" arrives as "Âûñøàÿ". Such text only uses
+    // Latin-1 characters and has long runs of characters from U+00C0..U+00FF
+    // (one per Cyrillic letter), which Western words (Björk, Mötley Crüe,
+    // Ágætis) do not have: a run of 4+, or two runs of 3+.
+    int run = 0, longest = 0, runsOf3 = 0;
+    for (const QChar c : text) {
+        if (c.unicode() > 0xff)
+            return text; // real Unicode text, leave it alone
+        run = c.unicode() >= 0xc0 ? run + 1 : 0;
+        if (run == 3)
+            ++runsOf3;
+        longest = std::max(longest, run);
+    }
+    if (longest < 4 && runsOf3 < 2)
+        return text;
+    QString fixed = text;
+    for (QChar &c : fixed) {
+        const ushort u = c.unicode();
+        if (u >= 0xc0)
+            c = QChar(ushort(0x0410 + (u - 0xc0))); // А..я
+        else if (u == 0xa8)
+            c = QChar(ushort(0x0401)); // Ё
+        else if (u == 0xb8)
+            c = QChar(ushort(0x0451)); // ё
+        else if (u == 0xb9)
+            c = QChar(ushort(0x2116)); // №
+    }
+    return fixed;
 }
 
 QString formatTime(double seconds, bool tenths)

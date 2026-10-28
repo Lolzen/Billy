@@ -83,4 +83,7 @@ QImage coverArt(const QString &path);
 
 QString formatTime(double seconds, bool tenths = false);
 
+// Repairs Cyrillic tags that were stored as cp1251 but read as Latin-1.
+QString fixCyrillic(const QString &text);
+
 } // namespace Audio

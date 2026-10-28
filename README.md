@@ -25,6 +25,8 @@ und alle Rechte bleiben beim Autor.
   Getestet mit einem Sinuston, der auf drei Dateien aufgeteilt war: Die Titel ergeben hintereinander dekodiert
   wieder exakt die ursprüngliche Länge, ohne Lücke und ohne Knacken. Das gilt für WAV, FLAC, MP3 (CBR und
   VBR), Ogg Vorbis, Opus, AAC/M4A und für gemischte Sampleraten.
+* Kyrillische Tags, die auf russischen Windows-Systemen als cp1251 gespeichert, aber als Latin-1 deklariert
+  wurden („Âûñøàÿ“), werden erkannt und richtig angezeigt („Высшая“).
 * Formate: alles, was FFmpeg dekodiert, darunter MP3/MP2/MP1, WAV, FLAC, Ogg Vorbis, Opus, AAC/M4A, ALAC,
   WMA, APE, WavPack, Musepack und AIFF. Sampelgenaues Springen in allen Formaten.
 * **Internetradio**: „Add url“ (Ctrl+R) für Shoutcast-/Icecast-Streams (MP3, AAC, Ogg, Opus, HLS) und
@@ -77,7 +79,7 @@ QPainter gezeichnet.
   Bei Internetradio stehen dort Sender, Interpret und Titel aus den Stream-Metadaten.
 * **Spektrum-Analyzer** auf der Info-Seite, nach dem „Channel Spectrum panel“ des Skins: von der Mitte aus
   gespiegelt (tiefe Frequenzen in der Mitte, linker Kanal nach links, rechter nach rechts), 34 Balken pro
-  Kanal, 5 px breit mit 1 px Abstand, 2048er FFT, pro Band der lauteste Bin in dB. Die Striche sind nach Höhe
+  Kanal, 5 px breit mit 1 px Abstand, 2048er FFT, pro Band der lauteste Bin in dB (−50 bis −15 dB). Die Striche sind nach Höhe
   von `#202020` bis `#E4E4E4` eingefärbt, jeder Balken trägt eine fallende Peak-Kappe in `#F5F5F5` (in Ruhe
   bilden die Kappen die gestrichelte Grundlinie). FFT-Größe, Balkenmaße und Farben stammen aus der gespeicherten
   Panel-Konfiguration des Skins, Lage und Balkenzahl aus einem Screenshot des Originals.
