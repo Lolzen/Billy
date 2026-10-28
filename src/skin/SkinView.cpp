@@ -77,6 +77,39 @@ const QStringList &glyphRows(int id)
     return glyphs[std::clamp(id, 0, int(glyphs.size()) - 1)];
 }
 
+// Glass as in the skin: a light edge on top, an upper half that darkens
+// downwards, a sharp step to dark in the middle and a lower half that
+// brightens again. Values are grey levels; 'shift' brightens (hover).
+struct Glass
+{
+    int top, upperFrom, upperTo, lowerFrom, lowerTo;
+};
+constexpr Glass kTileGlass{104, 61, 46, 27, 49};  // opaque button tiles
+constexpr Glass kBarGlass{81, 48, 37, 18, 39};    // the row behind the buttons
+
+QColor grey(int v, int alpha = 255)
+{
+    v = std::clamp(v, 0, 255);
+    return QColor(v, v, v, alpha);
+}
+
+void paintGlass(QPainter &p, const QRect &r, const Glass &g, int shift = 0, int alpha = 255)
+{
+    const int h = r.height();
+    const int mid = std::max(2, int(std::lround(h * 0.545))); // row 12 of 22
+    for (int y = 0; y < h; ++y) {
+        int v;
+        if (y == 0) {
+            v = g.top;
+        } else if (y < mid) {
+            v = g.upperFrom + (g.upperTo - g.upperFrom) * (y - 1) / std::max(1, mid - 2);
+        } else {
+            v = g.lowerFrom + (g.lowerTo - g.lowerFrom) * (y - mid) / std::max(1, h - mid - 1);
+        }
+        p.fillRect(QRect(r.left(), r.top() + y, r.width(), 1), grey(v + shift, alpha));
+    }
+}
+
 } // namespace
 
 SkinView::SkinView(QWidget *parent) : QWidget(parent)
@@ -240,7 +273,8 @@ void SkinView::layoutParts()
     m_buttons.append({Info, QRect(x, y, 44, kBarH), QStringLiteral("INFO"), tr("Info")});
     x += 44;
     m_buttons.append({Playlist, QRect(x, y, 44, kBarH), QStringLiteral("PLAYLIST"), tr("Playlist")});
-    m_buttons.append({Menu, QRect(w - 32, y, 25, kBarH), QString(), tr("Menu")});
+    // The alien cat is a bit bigger than the row and sticks out above it.
+    m_buttons.append({Menu, QRect(w - 36, y - 9, 30, 29), QString(), tr("Menu")});
     m_buttons.append({Minimize, QRect(w - 80, y, 37, kBarH), QStringLiteral("MINIMIZE"), QString()});
     m_buttons.append({Close, QRect(w - 120, y, 31, kBarH), QStringLiteral("CLOSE"), QString()});
     const int vw = PixelFont::textWidth(QStringLiteral("100%")) + 12;
@@ -326,16 +360,17 @@ void SkinView::paintFrame(QPainter &p)
 
 void SkinView::paintProgress(QPainter &p)
 {
-    // A flat bar of two shades of translucent grey, light edges at the top and bottom.
+    // A glass strip: dark edges, light lines, glossy upper and darker lower half.
+    // The played part is the same glass in light grey and less transparent.
     const QRect r = m_progressRect;
-    p.fillRect(r, QColor(126, 126, 126, 128));
-    p.fillRect(r.adjusted(0, 2, 0, -2), QColor(97, 97, 97, 128));
-    if (m_progress >= 0) {
-        const int fillW = int(r.width() * std::clamp(m_progress, 0.0, 1.0));
-        const QRect fill(r.left(), r.top(), fillW, r.height());
-        p.fillRect(fill, QColor(86, 86, 86, 192));
-        p.fillRect(fill.adjusted(0, 2, 0, -2), QColor(150, 150, 150, 192));
-        p.fillRect(QRect(fill.left(), fill.top() + 2, fill.width(), 1), QColor(200, 200, 200, 170));
+    static const int track[10] = {0, 98, 45, 45, 45, 12, 12, 12, 98, 0};
+    static const int played[10] = {60, 186, 168, 168, 168, 158, 158, 158, 186, 60};
+    const int fillW = m_progress >= 0 ? int(r.width() * std::clamp(m_progress, 0.0, 1.0)) : 0;
+    for (int y = 0; y < r.height(); ++y) {
+        const int row = std::min(9, y * 10 / r.height());
+        if (fillW > 0)
+            p.fillRect(QRect(r.left(), r.top() + y, fillW, 1), grey(played[row], 190));
+        p.fillRect(QRect(r.left() + fillW, r.top() + y, r.width() - fillW, 1), grey(track[row], 128));
     }
 
     if (!m_message.isEmpty()) {
@@ -461,73 +496,84 @@ void SkinView::paintGlyph(QPainter &p, Button id, const QRect &r, const QColor &
 
 void SkinView::paintAlien(QPainter &p, const QRect &r, bool hover)
 {
-    // The "alien cat": a head with pointed ears and big leaf shaped eyes.
+    // The "alien cat", designed on the skin's 25x22 grid and scaled to 'r':
+    // pointed ears, a wide head and big eyes slanting down to the nose.
+    p.save();
     p.setRenderHint(QPainter::Antialiasing);
-    const QRectF f = QRectF(r).adjusted(2.5, 2.5, -2.5, -1.5);
-    const double cx = f.center().x();
+    p.translate(r.topLeft());
+    p.scale(r.width() / 25.0, r.height() / 22.0);
+
     QPainterPath head;
-    head.moveTo(f.left() + 1, f.top());                                  // left ear tip
-    head.lineTo(f.left() + f.width() * 0.36, f.top() + f.height() * 0.22);
-    head.quadTo(cx, f.top() + f.height() * 0.16, f.right() - f.width() * 0.36, f.top() + f.height() * 0.22);
-    head.lineTo(f.right() - 1, f.top());                                 // right ear tip
-    head.cubicTo(f.right() + 0.5, f.top() + f.height() * 0.45, f.right() - 1, f.top() + f.height() * 0.7,
-                 cx, f.bottom());
-    head.cubicTo(f.left() + 1, f.top() + f.height() * 0.7, f.left() - 0.5, f.top() + f.height() * 0.45,
-                 f.left() + 1, f.top());
-    QLinearGradient g(f.topLeft(), f.bottomLeft());
-    g.setColorAt(0, QColor(0xb8, 0xb8, 0xb8, hover ? 150 : 245));
-    g.setColorAt(1, QColor(0x6a, 0x6a, 0x6a, hover ? 120 : 245));
-    p.setPen(QPen(QColor(25, 25, 25, hover ? 120 : 200), 0.8));
+    head.moveTo(6.5, 0.3);                                // left ear tip
+    head.cubicTo(8.0, 1.8, 9.2, 3.6, 9.8, 5.2);           // inner side of the ear
+    head.quadTo(12.5, 4.4, 15.2, 5.2);                    // top of the head between the ears
+    head.cubicTo(15.8, 3.6, 17.0, 1.8, 18.5, 0.3);        // right ear tip
+    head.cubicTo(19.8, 3.0, 20.8, 5.6, 21.6, 8.0);        // outer side of the right ear
+    head.cubicTo(23.4, 10.5, 24.2, 14.5, 23.2, 17.6);     // right cheek
+    head.cubicTo(21.6, 20.6, 16.5, 22.0, 12.5, 22.0);     // chin
+    head.cubicTo(8.5, 22.0, 3.4, 20.6, 1.8, 17.6);
+    head.cubicTo(0.8, 14.5, 1.6, 10.5, 3.4, 8.0);         // left cheek
+    head.cubicTo(4.2, 5.6, 5.2, 3.0, 6.5, 0.3);
+    QLinearGradient g(0, 0, 0, 22);
+    const int a = hover ? 140 : 235; // like the original, it fades when hovered
+    g.setColorAt(0.0, grey(150, a));
+    g.setColorAt(0.5, grey(118, a));
+    g.setColorAt(1.0, grey(92, a));
+    p.setPen(QPen(grey(20, hover ? 110 : 190), 0.7));
     p.setBrush(g);
     p.drawPath(head);
-    // Eyes: light leaves slanting towards the nose.
+
+    // A soft shine on the forehead.
+    QRadialGradient shine(12.5, 8.5, 8.0);
+    shine.setColorAt(0, QColor(255, 255, 255, hover ? 40 : 60));
+    shine.setColorAt(1, QColor(255, 255, 255, 0));
     p.setPen(Qt::NoPen);
-    p.setBrush(QColor(245, 245, 245, hover ? 150 : 235));
+    p.setBrush(shine);
+    p.drawPath(head);
+
+    // Eyes: big almonds from the outer top to the nose.
+    p.setBrush(grey(242, hover ? 160 : 245));
     for (int side : {-1, 1}) {
+        auto pt = [side](double x, double y) { return QPointF(12.5 + side * (12.5 - x), y); };
         QPainterPath eye;
-        const QPointF inner(cx + side * f.width() * 0.06, f.top() + f.height() * 0.78);
-        const QPointF outer(cx + side * f.width() * 0.4, f.top() + f.height() * 0.42);
-        const QPointF mid((inner.x() + outer.x()) / 2, (inner.y() + outer.y()) / 2);
-        const QPointF normal(-(outer.y() - inner.y()) * 0.32, (outer.x() - inner.x()) * 0.32);
-        eye.moveTo(inner);
-        eye.quadTo(mid + normal, outer);
-        eye.quadTo(mid - normal, inner);
+        eye.moveTo(pt(3.2, 12.2));
+        eye.cubicTo(pt(6.5, 11.8), pt(10.8, 14.6), pt(11.4, 19.0));
+        eye.cubicTo(pt(8.0, 19.4), pt(3.4, 16.4), pt(3.2, 12.2));
         p.drawPath(eye);
     }
+    // Nose / mouth.
+    p.setBrush(grey(235, hover ? 120 : 200));
+    p.drawEllipse(QPointF(12.5, 20.4), 0.9, 0.7);
+    p.restore();
 }
 
 void SkinView::paintBar(QPainter &p)
 {
     p.setRenderHint(QPainter::Antialiasing, false);
-    // Translucent row with a light line on top.
-    p.fillRect(m_barRect, QColor(0, 0, 0, 150));
-    p.fillRect(QRect(m_barRect.left(), m_barRect.top(), m_barRect.width(), 1), QColor(255, 255, 255, 45));
+    // The row itself is glass too, slightly see-through.
+    paintGlass(p, m_barRect, kBarGlass, 0, 235);
 
     for (const ButtonRect &b : m_buttons) {
         const bool hover = b.id == m_hover;
         const bool active = (b.id == Info && m_page == InfoPage) || (b.id == Playlist && m_page == PlaylistPage);
-        if (b.id == Menu) {
-            paintAlien(p, b.rect, hover);
-            continue;
+        if (b.id == Menu)
+            continue; // drawn last, it sticks out of the row
+        const bool tile = b.id != Close && b.id != Minimize && b.id != Volume;
+        if (tile) {
+            // Glass tile with a light line on the left and a dark one on the right.
+            paintGlass(p, b.rect, kTileGlass, hover ? 26 : active ? 10 : 0);
+            p.fillRect(QRect(b.rect.left(), b.rect.top() + 1, 1, b.rect.height() - 1), grey(hover ? 96 : 70, 200));
+            p.fillRect(QRect(b.rect.right(), b.rect.top() + 1, 1, b.rect.height() - 1), grey(22, 220));
         }
-        if (b.id != Close && b.id != Minimize && b.id != Volume) {
-            // Button tiles: a soft highlight when hovered and a separator on the right.
-            if (hover || active) {
-                QLinearGradient g(b.rect.topLeft(), b.rect.bottomLeft());
-                g.setColorAt(0, QColor(255, 255, 255, hover ? 46 : 26));
-                g.setColorAt(1, QColor(255, 255, 255, hover ? 14 : 6));
-                p.fillRect(b.rect.adjusted(0, 1, -1, 0), g);
-            }
-            p.fillRect(QRect(b.rect.right(), b.rect.top() + 5, 1, kBarH - 10), QColor(255, 255, 255, 40));
-        }
-        const QColor color = hover || active ? kLabelHover : kLabelColor;
+        // Labels on the tiles are grey, the window buttons white; hover lights them up.
+        QColor color = tile ? grey(hover || active ? 235 : 178) : grey(hover ? 255 : 228);
         if (b.id == Volume) {
             const QString text = QStringLiteral("%1%").arg(m_volume);
             PixelFont::draw(p, b.rect.right() - PixelFont::textWidth(text), b.rect.top() + 9, text, color);
             continue;
         }
         if (b.text.isEmpty()) {
-            paintGlyph(p, b.id, b.rect, color);
+            paintGlyph(p, b.id, b.rect, tile ? grey(hover ? 235 : 150) : color);
             continue;
         }
         const int tw = PixelFont::textWidth(b.text);
@@ -541,8 +587,12 @@ void SkinView::paintBar(QPainter &p)
             if (b.id == Volume)
                 volume = b.rect;
         const int tw = PixelFont::textWidth(m_time);
-        PixelFont::draw(p, volume.left() - tw - 6, m_barRect.top() + 9, m_time, kLabelColor);
+        PixelFont::draw(p, volume.left() - tw - 6, m_barRect.top() + 9, m_time, grey(200));
     }
+
+    for (const ButtonRect &b : m_buttons)
+        if (b.id == Menu)
+            paintAlien(p, b.rect, b.id == m_hover);
 }
 
 // ------------------------------------------------------------------ input

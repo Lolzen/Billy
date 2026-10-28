@@ -80,9 +80,9 @@ Lichtstreifen. Grafiken des Skins werden nicht verwendet, alles ist mit QPainter
   deckender werden.
 * **Playlist-Seite**: Gruppen je Album mit Kopfzeile (Album und Interpret aus den Ordnernamen, so müssen keine
   Tags gelesen werden), Nummernspalte, ▶/❚❚ und Restzeit beim laufenden Titel, Cover neben jeder Gruppe
-* Transparente Seekbar und Knopfreihe mit Pixelschrift: ⏮ ⏯ ⏭ ■ ⏏ (Ordner öffnen), INFO, PLAYLIST, Zeit,
-  Lautstärke (ziehen oder Mausrad), CLOSE, MINIMIZE. Die **Alien-Katze** rechts unten (oder ein Rechtsklick)
-  öffnet das Menü.
+* Seekbar und Knopfreihe in Glas-Optik (heller Rand, glänzende obere und dunklere untere Hälfte) mit Pixelschrift: ⏮ ⏯ ⏭ ■ ⏏ (Ordner öffnen), INFO, PLAYLIST, Zeit,
+  Lautstärke (ziehen oder Mausrad), CLOSE, MINIMIZE. Die **Alien-Katze** rechts unten ragt über die Leiste
+  hinaus und öffnet das Menü (ein Rechtsklick auch).
 * Fenster an einer freien Stelle verschieben, an den Kanten in der Größe ändern; jeder Look merkt sich seine
   eigene Fenstergröße.
 
