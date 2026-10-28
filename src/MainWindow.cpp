@@ -13,6 +13,9 @@
 #include "widgets/Glyphs.h"
 #include "widgets/PlaylistView.h"
 #include "widgets/SheepProgress.h"
+#include "PlayStats.h"
+#include "audio/Spectrum.h"
+#include "skin/SkinView.h"
 #ifdef BILLY_HAVE_DBUS
 #include "Mpris.h"
 #include <QDBusConnection>
@@ -44,6 +47,8 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QScreen>
+#include <QScrollBar>
+#include <QStackedWidget>
 #include <QStatusBar>
 #include <QSystemTrayIcon>
 #include <QThread>
@@ -104,6 +109,7 @@ MainWindow::MainWindow()
     connect(m_engine, &AudioEngine::streamInfo, this, [this](quint64, const QString &codec, int kbps) {
         m_streamCodec = codec;
         m_streamKbps = kbps;
+        updateSkinInfo();
         showStatus(kbps > 0 ? tr("Playing internet stream at %1 kbps").arg(kbps) : tr("Playing internet stream"));
     });
 
@@ -132,6 +138,7 @@ MainWindow::MainWindow()
         restoreGeometry(m_settings.geometry);
     if (m_settings.maximized)
         setWindowState(windowState() | Qt::WindowMaximized);
+    applyLook(m_settings.alternativeLook, true);
 }
 
 MainWindow::~MainWindow()
@@ -245,7 +252,12 @@ void MainWindow::createWidgets()
 
     layout->addWidget(m_topPanel);
     layout->addWidget(m_view, 1);
-    setCentralWidget(central);
+    m_classicPage = central;
+    m_classicLayout = layout;
+    m_stack = new QStackedWidget(this);
+    m_stack->addWidget(central);
+    setCentralWidget(m_stack);
+    createSkin();
 
     // Status bar: files | play mode | messages | format of the playing file
     m_statusFiles = new QLabel(this);
@@ -494,6 +506,11 @@ void MainWindow::createActions()
     meters->addActions(m_vuGroup->actions());
     meters->addAction(vuToggle);
     view->addSeparator();
+    m_lookAction = addAct(tr("&Alternative look"), {K(CTRL | SHIFT | Qt::Key_A)}, [this] {
+        applyLook(m_lookAction->isChecked());
+    });
+    m_lookAction->setCheckable(true);
+    view->addAction(m_lookAction);
     view->addAction(minimize);
 
     QMenu *help = menuBar()->addMenu(tr("&Help"));
@@ -609,6 +626,7 @@ void MainWindow::playId(quint64 id, double startSeconds)
     m_errorsInRow = 0;
     m_streamTitle.clear();
     m_model->setCurrentId(id);
+    recordPlay(id);
     if (PlaylistModel::isUrl(path))
         showStatus(tr("Connecting %1").arg(path), 30000);
     m_engine->play(path, id, startSeconds);
@@ -633,6 +651,7 @@ void MainWindow::onTrackStarted(quint64 id)
 {
     m_streamTitle.clear();
     m_model->setCurrentId(id);
+    recordPlay(id);
     updateTitle();
     if (m_mpris)
         m_mpris->notifyChanged();
@@ -657,6 +676,11 @@ void MainWindow::onStateChanged()
 {
     const auto state = m_engine->state();
     m_playButtons[1]->setDown(state == AudioEngine::Paused);
+    m_skin->setPlaying(state == AudioEngine::Playing);
+    if (state != AudioEngine::Playing)
+        m_skin->setSpectrum({});
+    if (state == AudioEngine::Stopped)
+        m_skin->setProgress(-1, QString());
     if (state == AudioEngine::Stopped) {
         m_progress->setValue(0);
         m_timeLabel->clear();
@@ -679,6 +703,8 @@ void MainWindow::updateTick()
     const auto state = m_engine->state();
     if (state == AudioEngine::Stopped)
         return;
+    if (m_skinActive)
+        updateSkinTick();
 
     const bool buffering = m_engine->isBuffering();
     if (buffering != m_wasBuffering) {
@@ -752,6 +778,8 @@ void MainWindow::updateStatusBar()
 
 void MainWindow::showStatus(const QString &text, int ms)
 {
+    if (m_skin)
+        m_skin->showMessage(text, qMin(ms, 15000));
     m_statusText->setText(text);
     m_statusClear->start(ms);
 }
@@ -837,6 +865,8 @@ void MainWindow::setVolume(int percent)
 {
     m_settings.volume = qBound(0, percent, 100);
     m_engine->setVolume(m_settings.volume);
+    if (m_skin)
+        m_skin->setVolume(m_settings.volume);
     updateStatusBar();
     if (m_mpris)
         m_mpris->notifyChanged();
@@ -1671,6 +1701,7 @@ void MainWindow::onStreamMetadata(quint64 id, const QString &name, const QString
     if (!title.isEmpty() && !m_wasBuffering)
         showStatus(title, 600000);
     updateTitle();
+    updateSkinInfo();
     if (m_mpris)
         m_mpris->notifyChanged();
 }
@@ -1702,6 +1733,235 @@ void MainWindow::showStreamInfo(int row)
         if (ok)
             m_model->setTitle(id, t);
     }
+}
+
+// --------------------------------------------------------- alternative look
+
+namespace {
+QString skinMenuStyle()
+{
+    return QStringLiteral(
+        "QMenu { background: #1b1d20; color: #e6e6e6; border: 1px solid #5c5c5c; padding: 3px; }"
+        "QMenu::item { padding: 4px 22px 4px 22px; }"
+        "QMenu::item:selected { background: rgba(120, 220, 190, 70); color: #ffffff; }"
+        "QMenu::item:disabled { color: #777777; }"
+        "QMenu::separator { height: 1px; background: #444444; margin: 3px 8px; }"
+        "QMenu::indicator { width: 12px; height: 12px; left: 5px; }");
+}
+} // namespace
+
+void MainWindow::createSkin()
+{
+    m_skin = new SkinView(m_stack);
+    m_stack->addWidget(m_skin);
+    m_spectrum = std::make_unique<Spectrum>(2048);
+    m_scopeBuffer.resize(size_t(m_spectrum->fftSize()));
+    m_skin->setVolume(m_settings.volume);
+    m_skin->setPage(m_settings.skinPage == 1 ? SkinView::PlaylistPage : SkinView::InfoPage);
+
+    connect(m_skin, &SkinView::previousClicked, this, &MainWindow::previousTrack);
+    connect(m_skin, &SkinView::playPauseClicked, this, &MainWindow::togglePause);
+    connect(m_skin, &SkinView::nextClicked, this, &MainWindow::nextTrack);
+    connect(m_skin, &SkinView::stopClicked, this, &MainWindow::stopPlayback);
+    connect(m_skin, &SkinView::ejectClicked, this, [this] { openFolderDialog(false); });
+    connect(m_skin, &SkinView::closeClicked, this, &MainWindow::close);
+    connect(m_skin, &SkinView::minimizeClicked, this, &MainWindow::showMinimized);
+    connect(m_skin, &SkinView::menuRequested, this, &MainWindow::showSkinMenu);
+    connect(m_skin, &SkinView::seekRequested, this, [this](double f) {
+        const double d = m_engine->duration();
+        if (d > 0)
+            seekTo(f * d);
+    });
+    connect(m_skin, &SkinView::volumeRequested, this, [this](int v) {
+        m_volumeBeforeSoftmute = -1;
+        setVolume(v);
+    });
+    connect(m_skin, &SkinView::pageChanged, this, [this](SkinView::Page page) {
+        m_settings.skinPage = page == SkinView::PlaylistPage ? 1 : 0;
+        if (page == SkinView::PlaylistPage)
+            jumpToPlaying();
+    });
+}
+
+void MainWindow::applyLook(bool alternative, bool initial)
+{
+    if (!initial && alternative == m_skinActive)
+        return;
+    if (!initial) {
+        // Each look keeps its own window size.
+        if (m_skinActive)
+            m_settings.skinGeometry = saveGeometry();
+        else
+            m_settings.geometry = saveGeometry();
+    }
+    const bool wasVisible = isVisible();
+    m_skinActive = alternative;
+    m_settings.alternativeLook = alternative;
+    m_lookAction->setChecked(alternative);
+
+    if (alternative) {
+        // A see-through playlist on the dark glass pane of the skin.
+        Scheme glass = Scheme::systemScheme();
+        glass.systemDefault = false;
+        glass.background = Qt::transparent;
+        glass.font = QColor(240, 240, 240);
+        glass.fontSelected = Qt::white;
+        glass.selection = QColor(255, 255, 255, 45);
+        glass.selectionPlaying = QColor(255, 255, 255, 65);
+        glass.playing = QColor(0xf3, 0xe7, 0xa1);
+        glass.playingSelected = QColor(0xf3, 0xe7, 0xa1);
+        glass.queued = QColor(0x9c, 0xff, 0x9c);
+        glass.shuffled = QColor(255, 255, 255, 110);
+        glass.radio = QColor(0x9c, 0xd8, 0xff);
+        glass.fontName = m_scheme.fontName;
+        glass.fontSize = m_scheme.fontSize;
+        m_view->setScheme(glass);
+        m_view->setFrameShape(QFrame::NoFrame);
+        m_view->viewport()->setAutoFillBackground(false);
+        // Only the scroll bar gets a style sheet; one on the view would stick after switching back.
+        m_view->verticalScrollBar()->setStyleSheet(QStringLiteral(
+            "QScrollBar:vertical { background: transparent; width: 8px; margin: 0; }"
+            "QScrollBar::handle:vertical { background: rgba(255,255,255,70); border-radius: 3px; min-height: 24px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }"));
+        m_skin->setPlaylistWidget(m_view);
+        m_stack->setCurrentWidget(m_skin);
+        for (QAction *a : menuBar()->actions())
+            if (a->menu())
+                a->menu()->setStyleSheet(skinMenuStyle());
+        menuBar()->hide();
+        statusBar()->hide();
+        setWindowFlag(Qt::FramelessWindowHint, true);
+        if (!m_settings.skinGeometry.isEmpty())
+            restoreGeometry(m_settings.skinGeometry);
+        else
+            resize(740, 330);
+        updateSkinInfo();
+    } else {
+        m_skin->setPlaylistWidget(nullptr);
+        for (QAction *a : menuBar()->actions())
+            if (a->menu())
+                a->menu()->setStyleSheet(QString());
+        m_view->verticalScrollBar()->setStyleSheet(QString());
+        m_view->setFrameShape(QFrame::StyledPanel);
+        m_view->viewport()->setAutoFillBackground(true);
+        m_view->setScheme(m_scheme);
+        m_classicLayout->insertWidget(1, m_view, 1);
+        m_view->show();
+        m_stack->setCurrentWidget(m_classicPage);
+        menuBar()->show();
+        statusBar()->show();
+        setWindowFlag(Qt::FramelessWindowHint, false);
+        if (!m_settings.geometry.isEmpty())
+            restoreGeometry(m_settings.geometry);
+        else
+            resize(394, 289);
+    }
+    if (wasVisible)
+        show(); // changing the window flags hides the window
+}
+
+void MainWindow::recordPlay(quint64 id)
+{
+    const QString path = m_model->pathOf(id);
+    m_statsLine.clear();
+    m_lastPlayedLine.clear();
+    if (!path.isEmpty() && !PlaylistModel::isUrl(path)) {
+        const PlayStats::Entry before = PlayStats::record(path);
+        const int count = before.count + 1;
+        m_statsLine = count == 1 ? tr("Track played for the first time") : tr("Track played %1 times").arg(count);
+        if (before.last.isValid())
+            m_lastPlayedLine = tr("Last played %1").arg(before.last.toString(QStringLiteral("yyyy-MM-dd hh:mm:ss")));
+    }
+    updateSkinInfo();
+}
+
+void MainWindow::updateSkinInfo()
+{
+    if (!m_skinActive)
+        return;
+    SkinView::TrackInfo info;
+    const quint64 id = m_model->currentId();
+    const QString path = m_model->pathOf(id);
+    if (path.isEmpty()) {
+        info.album = QStringLiteral("Billy");
+        info.artist = tr("No nonsense, gapless audio player");
+        info.details << tr("Open a folder with music files: F4 or the eject button.")
+                     << tr("Internet radio: Ctrl+R")
+                     << tr("Menu: the alien in the corner, or a right click.");
+    } else if (PlaylistModel::isUrl(path)) {
+        info.album = displayName(id);
+        const int dash = m_streamTitle.indexOf(QLatin1String(" - "));
+        if (dash > 0) {
+            info.artist = m_streamTitle.left(dash);
+            info.title = m_streamTitle.mid(dash + 3);
+        } else {
+            info.title = m_streamTitle;
+        }
+        info.details << tr("Internet radio");
+        if (m_streamKbps > 0 || !m_streamCodec.isEmpty())
+            info.details << tr("%1 kbps %2").arg(m_streamKbps).arg(m_streamCodec);
+        info.details << path;
+    } else {
+        // Tags if there are any, otherwise the folder names (Artist/Album/Track).
+        const AudioInfo audio = Audio::probe(path, true);
+        const QFileInfo fi(path);
+        info.title = audio.tagMap.value(QStringLiteral("title"), fi.completeBaseName());
+        info.album = audio.tagMap.value(QStringLiteral("album"), fi.dir().dirName());
+        QString artist = audio.tagMap.value(QStringLiteral("artist"));
+        if (artist.isEmpty()) {
+            QDir up = fi.dir();
+            if (up.cdUp())
+                artist = up.dirName();
+        }
+        info.artist = artist;
+        if (!m_statsLine.isEmpty())
+            info.details << m_statsLine;
+        if (!m_lastPlayedLine.isEmpty())
+            info.details << m_lastPlayedLine;
+        QString format;
+        if (audio.bitrate > 0)
+            format = tr("%1 kbps ").arg(audio.bitrate);
+        format += audio.type;
+        if (audio.type == QLatin1String("MP3"))
+            format += audio.vbr ? QStringLiteral(" VBR") : QStringLiteral(" CBR");
+        format += QStringLiteral(" | %1 MB").arg(fi.size() / 1048576.0, 0, 'f', 2);
+        info.details << QString() << format;
+        info.cover = Audio::coverArt(path);
+    }
+    // An empty line in the details separates the statistics from the format.
+    if (!info.details.isEmpty() && info.details.first().isEmpty())
+        info.details.removeFirst();
+    m_skin->setTrackInfo(info);
+}
+
+void MainWindow::updateSkinTick()
+{
+    const double pos = m_engine->position();
+    const double dur = m_engine->duration();
+    QString time = Audio::formatTime(pos);
+    if (dur > 0)
+        time += QStringLiteral(" / ") + Audio::formatTime(dur);
+    m_skin->setProgress(dur > 0 ? pos / dur : -1, time);
+
+    if (m_engine->state() != AudioEngine::Playing)
+        return;
+    const int rate = m_engine->recentSamples(m_scopeBuffer.data(), int(m_scopeBuffer.size()));
+    if (rate > 0)
+        m_skin->setSpectrum(m_spectrum->analyse(m_scopeBuffer.data(), rate, 64));
+}
+
+void MainWindow::showSkinMenu(const QPoint &globalPos, bool anchored)
+{
+    // The menu bar of the classic look, as one popup.
+    QMenu menu(this);
+    menu.setStyleSheet(skinMenuStyle());
+    for (QAction *a : menuBar()->actions())
+        menu.addAction(a);
+    QPoint pos = globalPos;
+    if (anchored) // open upwards, ending at the alien
+        pos -= QPoint(menu.sizeHint().width(), menu.sizeHint().height());
+    menu.exec(pos);
 }
 
 // ------------------------------------------------------------- MPRIS API
@@ -1924,8 +2184,12 @@ void MainWindow::changeEvent(QEvent *e)
 
 void MainWindow::closeEvent(QCloseEvent *e)
 {
-    m_settings.geometry = saveGeometry();
-    m_settings.maximized = isMaximized();
+    if (m_skinActive) {
+        m_settings.skinGeometry = saveGeometry();
+    } else {
+        m_settings.geometry = saveGeometry();
+        m_settings.maximized = isMaximized();
+    }
     const int row = m_model->currentRow();
     m_settings.resumeRow = row >= 0 ? row : m_view->currentIndex().row();
     m_settings.resumePos = m_engine->state() == AudioEngine::Stopped ? 0 : m_engine->position();

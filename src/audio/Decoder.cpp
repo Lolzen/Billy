@@ -1,6 +1,7 @@
 #include "audio/Decoder.h"
 
 #include <QFile>
+#include <QDir>
 #include <QFileInfo>
 #include <QObject>
 #include <QStringDecoder>
@@ -637,13 +638,72 @@ AudioInfo probe(const QString &path, bool withTags)
             QString v = dictValue(fmt->metadata, f.key);
             if (v.isEmpty())
                 v = dictValue(st->metadata, f.key);
-            if (!v.isEmpty())
+            if (!v.isEmpty()) {
                 info.tags << QStringLiteral("%1: %2").arg(QLatin1String(f.label), v);
+                info.tagMap.insert(QLatin1String(f.key), v);
+            }
+        }
+    }
+    info.type = QFileInfo(path).suffix().toUpper();
+    if (par->codec_id == AV_CODEC_ID_MP3) {
+        // LAME writes "Xing" for VBR and "Info" for CBR files; VBRI is Fraunhofer's VBR header.
+        QFile f(path);
+        if (f.open(QIODevice::ReadOnly)) {
+            // Skip an ID3v2 tag (its text could contain these words), then look at the first frame.
+            const QByteArray id3 = f.read(10);
+            qint64 start = 0;
+            if (id3.size() == 10 && id3.startsWith("ID3"))
+                start = 10 + ((qint64(id3[6] & 0x7f) << 21) | (qint64(id3[7] & 0x7f) << 14)
+                              | (qint64(id3[8] & 0x7f) << 7) | qint64(id3[9] & 0x7f));
+            f.seek(start);
+            const QByteArray frame = f.read(4096);
+            info.vbr = frame.contains("Xing") || frame.contains("VBRI");
         }
     }
     avformat_close_input(&fmt);
     info.ok = true;
     return info;
+}
+
+QImage coverArt(const QString &path)
+{
+    initFfmpeg();
+    QImage image;
+    AVFormatContext *fmt = nullptr;
+    if (avformat_open_input(&fmt, QFile::encodeName(path).constData(), nullptr, nullptr) >= 0) {
+        for (unsigned i = 0; i < fmt->nb_streams && image.isNull(); ++i) {
+            const AVStream *st = fmt->streams[i];
+            if ((st->disposition & AV_DISPOSITION_ATTACHED_PIC) && st->attached_pic.size > 0)
+                image.loadFromData(st->attached_pic.data, st->attached_pic.size);
+        }
+        avformat_close_input(&fmt);
+    }
+    if (!image.isNull())
+        return image;
+
+    // Look for the usual image files in the folder.
+    const QDir dir = QFileInfo(path).absoluteDir();
+    const QStringList images = dir.entryList({QStringLiteral("*.jpg"), QStringLiteral("*.jpeg"),
+                                              QStringLiteral("*.png"), QStringLiteral("*.bmp")},
+                                             QDir::Files | QDir::Readable, QDir::Name);
+    QString best;
+    int bestScore = -1;
+    for (const QString &file : images) {
+        const QString lower = file.toLower();
+        int score = 0;
+        for (const char *name : {"cover", "folder", "front", "album"})
+            if (lower.startsWith(QLatin1String(name)))
+                score = 2;
+        if (lower.contains(QLatin1String("back")) || lower.contains(QLatin1String("cd")))
+            score -= 1;
+        if (score > bestScore) {
+            bestScore = score;
+            best = file;
+        }
+    }
+    if (!best.isEmpty())
+        image.load(dir.filePath(best));
+    return image;
 }
 
 QString formatTime(double seconds, bool tenths)

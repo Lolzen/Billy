@@ -16,6 +16,10 @@ class Mpris;
 class PlaylistModel;
 class PlaylistView;
 class QActionGroup;
+class QStackedWidget;
+class QVBoxLayout;
+class SkinView;
+class Spectrum;
 class QNetworkAccessManager;
 class QLabel;
 class QMenu;
@@ -94,6 +98,13 @@ private:
     void addStreams(const QStringList &urls, const QHash<QString, QString> &titles, bool play);
     void resolveRemotePlaylist(const QUrl &url, bool play);
     void showStreamInfo(int row);
+    // Alternative look
+    void createSkin();
+    void applyLook(bool alternative, bool initial = false);
+    void updateSkinInfo();
+    void updateSkinTick();
+    void showSkinMenu(const QPoint &globalPos, bool anchored);
+    void recordPlay(quint64 id);
     void onStreamMetadata(quint64 id, const QString &name, const QString &title);
     void openPlaylist();
     void loadPlaylistFile(const QString &file, bool play = false);
@@ -179,6 +190,16 @@ private:
     std::shared_ptr<std::atomic_bool> m_scanCancel;
     std::shared_ptr<std::atomic_bool> m_timeCancel;
     QStringList m_clipboard;
+    QStackedWidget *m_stack = nullptr;
+    QWidget *m_classicPage = nullptr;
+    QVBoxLayout *m_classicLayout = nullptr;
+    SkinView *m_skin = nullptr;
+    std::unique_ptr<Spectrum> m_spectrum;
+    std::vector<float> m_scopeBuffer;
+    QAction *m_lookAction = nullptr;
+    bool m_skinActive = false;
+    QString m_statsLine;      // "Track played 8 times" of the current file
+    QString m_lastPlayedLine;
     QNetworkAccessManager *m_net = nullptr;
     QString m_streamTitle;   // "Artist - Title" announced by the playing stream
     QString m_streamCodec;

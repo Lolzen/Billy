@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QImage>
+#include <QMap>
 #include <QString>
 #include <QStringList>
 
@@ -62,6 +64,9 @@ struct AudioInfo
     int bitrate = 0;     // kbps, 0 when unknown
     double seconds = -1; // -1 when unknown
     QStringList tags;    // "Title: ...", "Artist: ..." lines
+    QMap<QString, QString> tagMap; // lower case keys: title, artist, album, ...
+    QString type;        // short name: MP3, FLAC, OGG, ...
+    bool vbr = false;    // MP3 with a Xing/VBRI header
 };
 
 namespace Audio {
@@ -72,6 +77,9 @@ bool isSupported(const QString &path);
 QString fileDialogFilter();
 
 AudioInfo probe(const QString &path, bool withTags);
+
+// Embedded cover art, or cover/folder/front image next to the file.
+QImage coverArt(const QString &path);
 
 QString formatTime(double seconds, bool tenths = false);
 

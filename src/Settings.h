@@ -67,6 +67,9 @@ struct Settings
     bool includeSubfolders = true;
     QByteArray geometry;
     bool maximized = false;
+    bool alternativeLook = true; // the skinned "aurora" look
+    QByteArray skinGeometry;
+    int skinPage = 0;            // 0: info, 1: playlist
     // Resume state.
     int resumeRow = -1;
     double resumePos = 0;

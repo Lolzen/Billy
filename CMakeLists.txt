@@ -24,6 +24,9 @@ set(BILLY_SOURCES
   src/SingleInstance.cpp
   src/audio/Decoder.cpp
   src/audio/AudioEngine.cpp
+  src/audio/Spectrum.cpp
+  src/PlayStats.cpp
+  src/skin/SkinView.cpp
   src/widgets/SheepProgress.cpp
   src/widgets/PlaylistView.cpp
   src/widgets/Glyphs.cpp

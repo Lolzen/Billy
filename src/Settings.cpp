@@ -212,6 +212,9 @@ void Settings::load()
     s.beginGroup(QStringLiteral("Window"));
     geometry = s.value(QStringLiteral("Geometry")).toByteArray();
     maximized = s.value(QStringLiteral("Maximized"), false).toBool();
+    alternativeLook = s.value(QStringLiteral("Look"), QStringLiteral("alternative")).toString() != QLatin1String("classic");
+    skinGeometry = s.value(QStringLiteral("SkinGeometry")).toByteArray();
+    skinPage = s.value(QStringLiteral("SkinPage"), 0).toInt();
     s.endGroup();
 
     s.beginGroup(QStringLiteral("Playlist"));
@@ -251,6 +254,9 @@ void Settings::save() const
     s.beginGroup(QStringLiteral("Window"));
     s.setValue(QStringLiteral("Geometry"), geometry);
     s.setValue(QStringLiteral("Maximized"), maximized);
+    s.setValue(QStringLiteral("Look"), alternativeLook ? QStringLiteral("alternative") : QStringLiteral("classic"));
+    s.setValue(QStringLiteral("SkinGeometry"), skinGeometry);
+    s.setValue(QStringLiteral("SkinPage"), skinPage);
     s.endGroup();
 
     s.beginGroup(QStringLiteral("Playlist"));

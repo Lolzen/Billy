@@ -61,6 +61,28 @@ und alle Rechte bleiben beim Autor.
 
 Alle Tastenkürzel zeigt F1.
 
+### Alternativer Look
+
+Unter *View → Alternative look* (Ctrl+Shift+A) gibt es eine zweite, rahmenlose Oberfläche:
+
+![Alternativer Look](docs/screenshot-alternative.png)
+
+
+* Hintergrund aus vertikalen Lichtstreifen (Blau → Türkis → Grün), alles mit QPainter gezeichnet, ohne Bilddateien
+* **Info-Seite**: das Cover hängt an einer Schnur an einem Nagel (eingebettetes Bild oder `cover.jpg`,
+  `folder.jpg` usw. im Ordner). Daneben stehen Album, Interpret, Titel (aus den Tags, sonst aus den
+  Ordnernamen), „Track played N times“, „Last played …“ und das Format („192 kbps MP3 CBR | 4.85 MB“).
+  Bei Internetradio stehen dort Sender, Interpret und Titel aus den Stream-Metadaten.
+* **Playlist-Seite**: die Playlist auf einer dunklen Glasfläche
+* **Spektrum-Analyzer**: 2048er FFT auf den gerade hörbaren Samples (mit der Ausgabelatenz verrechnet),
+  logarithmische Bänder. Die Balken bestehen aus Strichsegmenten, die nach oben deckender werden.
+* Transparente Progressbar und Bedienleiste: ⏮ ⏯ ⏭ ■ ⏏ (Ordner öffnen), INFO, PLAYLIST, Zeit, Lautstärke
+  (ziehen oder Mausrad), CLOSE, MINIMIZE. Das **Alien** rechts unten (oder ein Rechtsklick) öffnet das Menü.
+* Fenster an einer freien Stelle verschieben, an den Kanten in der Größe ändern; jeder Look merkt sich seine
+  eigene Fenstergröße.
+
+Die Abspiel-Statistik liegt in `~/.config/Billy/PlayHistory.ini`.
+
 ### Nicht übernommen
 
 | Original | Grund / Ersatz |
