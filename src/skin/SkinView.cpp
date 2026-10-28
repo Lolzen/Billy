@@ -230,10 +230,6 @@ void SkinView::animate()
         float target = 0.f;
         if (!levels.empty())
             target = levels[std::min(levels.size() - 1, band * levels.size() / half)];
-        // The outer bars react less and less to the loudness.
-        const float d = float(band) / float(std::max<size_t>(1, half - 1));
-        target *= 1.f - 0.6f * std::pow(d, 1.5f);
-
         float &bar = m_bars[i];
         if (target > bar)
             bar += (target - bar) * 0.7f; // quick rise
@@ -272,10 +268,11 @@ void SkinView::layoutParts()
     m_barRect = QRect(kFrame, h - kFrame - kBarH, w - 2 * kFrame, kBarH);
     const QRect panel(kFrame, kPanelY, w - 2 * kFrame, m_barRect.top() - kPanelY);
 
-    // The spectrum sits above the buttons, in the middle like in the screenshot.
-    const int specWidth = int(panel.width() * 0.66) / kBarStep * kBarStep;
-    m_spectrumRect = QRect(panel.left() + int(panel.width() * 0.2), m_barRect.top() - kSpectrumH - 1, specWidth,
-                           kSpectrumH / kSegment * kSegment);
+    // Measured in the reference at 700x300: 68 bars (34 per channel) from x=136,
+    // the base line right above the buttons. Other sizes scale with the panel.
+    const int bars = std::max(8, int(std::lround(panel.width() * 68.0 / 688.0 / 2.0)) * 2);
+    m_spectrumRect = QRect(panel.left() + int(std::lround(panel.width() * 130.0 / 688.0)),
+                           m_barRect.top() - kSpectrumH, bars * kBarStep, kSpectrumH / kSegment * kSegment);
 
     // Cover 175px at (45,30) of the panel, text from x=240; smaller in a small window.
     const int coverSide = std::clamp(m_spectrumRect.top() - 2 - (panel.top() + 30), 64, 175);
@@ -485,22 +482,21 @@ void SkinView::paintSpectrum(QPainter &p)
     p.setRenderHint(QPainter::Antialiasing, false);
     const int segments = m_spectrumRect.height() / kSegment;
     const int bars = spectrumBands();
+    // As configured in the skin's channel spectrum panel: bars 5px wide with a
+    // 1px gap, coloured by height from #202020 at the bottom to #E4E4E4 at the
+    // top, and a #F5F5F5 peak cap on every bar (at rest the caps form the
+    // dashed line at the bottom).
     for (int i = 0; i < bars; ++i) {
         const float level = i < int(m_bars.size()) ? m_bars[size_t(i)] : 0.f;
         const float peak = i < int(m_peaks.size()) ? m_peaks[size_t(i)] : 0.f;
-        const int lit = int(std::lround(level * segments));
+        const int lit = std::min(segments - 1, int(std::lround(level * segments)));
         const int x = m_spectrumRect.left() + i * kBarStep;
-        // The lowest segment always shows, as a dashed base line.
-        for (int s = 0; s < std::max(lit, 1); ++s) {
-            const int y = m_spectrumRect.bottom() - s * kSegment;
-            // The higher, the less transparent.
-            const int alpha = lit == 0 ? 60 : int(45 + 190.0 * (s + 1) / segments);
-            p.fillRect(QRect(x, y, kBarStep - 1, 1), QColor(235, 235, 235, alpha));
+        for (int s = 0; s < lit; ++s) {
+            const int v = 0x20 + (0xe4 - 0x20) * s / std::max(1, segments - 1);
+            p.fillRect(QRect(x, m_spectrumRect.bottom() - s * kSegment, kBarStep - 1, 1), grey(v));
         }
-        // A white cap marks the recent peak.
-        const int cap = std::max(int(std::lround(peak * segments)), lit);
-        if (peak > 0.02f && cap < segments)
-            p.fillRect(QRect(x, m_spectrumRect.bottom() - cap * kSegment, kBarStep - 1, 1), QColor(255, 255, 255));
+        const int cap = std::min(segments - 1, std::max(int(std::lround(peak * segments)), lit));
+        p.fillRect(QRect(x, m_spectrumRect.bottom() - cap * kSegment, kBarStep - 1, 1), grey(0xf5));
     }
 }
 

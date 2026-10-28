@@ -68,11 +68,12 @@ std::vector<float> Spectrum::analyse(const float *samples, int sampleRate, int b
         int k0 = int(f0 / binHz), k1 = int(f1 / binHz);
         k0 = std::clamp(k0, 1, m_size / 2 - 1);
         k1 = std::clamp(std::max(k1, k0 + 1), k0 + 1, m_size / 2);
-        // Energy of the band, so broad sounds count as much as single tones.
-        float power = 0.f;
+        // Like foobar2000's spectrum panels: the strongest bin of the band, on a dB scale.
+        // (No energy sum: wide high bands do not add up, so quiet highs stay low.)
+        float peak = 0.f;
         for (int k = k0; k < k1; ++k)
-            power += re[size_t(k)] * re[size_t(k)] + im[size_t(k)] * im[size_t(k)];
-        float dB = 10.f * std::log10(std::max(power / (reference * reference), 1e-12f));
+            peak = std::max(peak, re[size_t(k)] * re[size_t(k)] + im[size_t(k)] * im[size_t(k)]);
+        const float dB = 10.f * std::log10(std::max(peak / (reference * reference), 1e-12f));
         // -kHeadroom dB fills the bar, -(kHeadroom + kRange) dB leaves it empty.
         levels[size_t(b)] = std::clamp((dB + kHeadroom + kRange) / kRange, 0.f, 1.f);
     }

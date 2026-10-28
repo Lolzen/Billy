@@ -75,10 +75,12 @@ QPainter gezeichnet.
 * **Info-Seite**: das Cover (175 px; eingebettetes Bild oder `cover.jpg`, `folder.jpg` usw. im Ordner). Daneben stehen Album, Interpret, Titel (aus den Tags, sonst aus den
   Ordnernamen), „Track played N times“, „Last played …“ und das Format („192 kbps MP3 CBR | 4.85 MB“).
   Bei Internetradio stehen dort Sender, Interpret und Titel aus den Stream-Metadaten.
-* **Spektrum-Analyzer** auf der Info-Seite, wie im Original von der Mitte aus gespiegelt: tiefe Frequenzen in
-  der Mitte, der linke Kanal nach links, der rechte nach rechts; die äußeren Balken reagieren immer weniger auf
-  die Lautstärke. 2048er FFT pro Kanal auf den gerade hörbaren Samples (mit der Ausgabelatenz verrechnet),
-  logarithmische Bänder. Balken aus 1-px-Strichen, die nach oben deckender werden, mit fallenden Peak-Kappen.
+* **Spektrum-Analyzer** auf der Info-Seite, nach dem „Channel Spectrum panel“ des Skins: von der Mitte aus
+  gespiegelt (tiefe Frequenzen in der Mitte, linker Kanal nach links, rechter nach rechts), 34 Balken pro
+  Kanal, 5 px breit mit 1 px Abstand, 2048er FFT, pro Band der lauteste Bin in dB. Die Striche sind nach Höhe
+  von `#202020` bis `#E4E4E4` eingefärbt, jeder Balken trägt eine fallende Peak-Kappe in `#F5F5F5` (in Ruhe
+  bilden die Kappen die gestrichelte Grundlinie). FFT-Größe, Balkenmaße und Farben stammen aus der gespeicherten
+  Panel-Konfiguration des Skins, Lage und Balkenzahl aus einem Screenshot des Originals.
 * **Playlist-Seite**: Gruppen je Album mit Kopfzeile (Album und Interpret aus den Ordnernamen, so müssen keine
   Tags gelesen werden), Nummernspalte, ▶/❚❚ und Restzeit beim laufenden Titel, Cover neben jeder Gruppe
 * Seekbar und Knopfreihe in Glas-Optik (heller Rand, glänzende obere und dunklere untere Hälfte) mit Pixelschrift: ⏮ ⏯ ⏭ ■ ⏏ (Ordner öffnen), INFO, PLAYLIST, Zeit,
