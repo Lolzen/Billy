@@ -23,7 +23,7 @@ constexpr int kFrame = 6;       // frame around the picture
 constexpr int kSeekY = 12;      // seek bar: y and height
 constexpr int kSeekH = 10;
 constexpr int kPanelY = 22;     // info/playlist panel
-constexpr int kBarH = 22;       // button row
+constexpr int kBarH = 23;       // button row (measured in the reference)
 constexpr int kBarStep = 6;     // spectrum: bar width (5) + gap (1)
 constexpr int kSegment = 2;     // spectrum: segment line (1) + gap (1)
 constexpr int kSpectrumH = 42;
@@ -83,9 +83,11 @@ const QStringList &glyphRows(int id)
 struct Glass
 {
     int top, upperFrom, upperTo, lowerFrom, lowerTo;
+    int lastUpper; // the row just above the step (tiles get a little brighter there)
 };
-constexpr Glass kTileGlass{104, 61, 46, 27, 49};  // opaque button tiles
-constexpr Glass kBarGlass{81, 48, 37, 18, 39};    // the row behind the buttons
+// Measured in the reference screenshot (23 rows: edge, 11 upper, 11 lower).
+constexpr Glass kTileGlass{103, 60, 46, 21, 49, 49}; // opaque button tiles
+constexpr Glass kBarGlass{80, 47, 36, 17, 38, 35};   // the row behind the buttons
 
 QColor grey(int v, int alpha = 255)
 {
@@ -96,13 +98,15 @@ QColor grey(int v, int alpha = 255)
 void paintGlass(QPainter &p, const QRect &r, const Glass &g, int shift = 0, int alpha = 255)
 {
     const int h = r.height();
-    const int mid = std::max(2, int(std::lround(h * 0.545))); // row 12 of 22
+    const int mid = std::max(3, h / 2 + 1); // row 12 of 23
     for (int y = 0; y < h; ++y) {
         int v;
         if (y == 0) {
             v = g.top;
+        } else if (y == mid - 1) {
+            v = g.lastUpper;
         } else if (y < mid) {
-            v = g.upperFrom + (g.upperTo - g.upperFrom) * (y - 1) / std::max(1, mid - 2);
+            v = g.upperFrom + (g.upperTo - g.upperFrom) * (y - 1) / std::max(1, mid - 3);
         } else {
             v = g.lowerFrom + (g.lowerTo - g.lowerFrom) * (y - mid) / std::max(1, h - mid - 1);
         }
@@ -366,18 +370,28 @@ void SkinView::paintEvent(QPaintEvent *)
 
 void SkinView::paintFrame(QPainter &p)
 {
-    // Like the skin: a dark outer line, a light inner one, the picture inside.
+    // The frame of the original, measured pixel by pixel, 6px from the outside:
+    // left, top and right: dark 22, grey 114, dark 23, dark 23, grey 114, dark 22;
+    // bottom:              dark 12, grey 114, dark 20, dark 21, grey 94,  dark 15.
     p.setRenderHint(QPainter::Antialiasing, false);
-    p.fillRect(rect(), QColor(0x22, 0x22, 0x22));
-    p.setPen(QColor(0x0c, 0x0c, 0x0c));
-    p.drawRect(rect().adjusted(0, 0, -1, -1));
-    p.setPen(QColor(0x9a, 0x9a, 0x9a));
-    p.drawRect(rect().adjusted(2, 2, -3, -3));
-    p.setPen(QColor(0x50, 0x50, 0x50));
-    p.drawRect(rect().adjusted(4, 4, -5, -5));
+    const int w = width(), h = height();
+    p.fillRect(rect(), grey(22));
+    p.fillRect(rect().adjusted(2, 2, -2, -2), grey(23));
+    p.fillRect(QRect(2, h - 4, w - 4, 1), grey(21));
+    p.fillRect(QRect(2, h - 3, w - 4, 1), grey(20));
+    p.fillRect(QRect(5, h - 6, w - 10, 1), grey(15));
+    p.fillRect(QRect(0, h - 1, w, 1), grey(12));
+    // Outer grey line
+    p.fillRect(QRect(1, 1, w - 2, 1), grey(114));
+    p.fillRect(QRect(1, 1, 1, h - 2), grey(114));
+    p.fillRect(QRect(w - 2, 1, 1, h - 2), grey(114));
+    p.fillRect(QRect(1, h - 2, w - 2, 1), grey(114));
+    // Inner grey line, darker at the bottom
+    p.fillRect(QRect(4, 4, w - 8, 1), grey(114));
+    p.fillRect(QRect(4, 4, 1, h - 8), grey(114));
+    p.fillRect(QRect(w - 5, 4, 1, h - 8), grey(114));
+    p.fillRect(QRect(5, h - 5, w - 10, 1), grey(94));
     p.drawImage(m_content.topLeft(), m_background);
-    p.setPen(QColor(0, 0, 0, 170));
-    p.drawRect(m_content.adjusted(0, 0, -1, -1));
 }
 
 void SkinView::paintProgress(QPainter &p)
@@ -385,17 +399,19 @@ void SkinView::paintProgress(QPainter &p)
     // A glass strip: dark edges, light lines, glossy upper and darker lower half.
     // The played part is the same glass in light grey and less transparent.
     const QRect r = m_progressRect;
-    // The played part leaves the outer row free at the top and the bottom.
-    static const int track[10] = {24, 120, 68, 68, 68, 36, 36, 36, 120, 24};
-    static const int played[10] = {0, 190, 172, 172, 172, 160, 160, 160, 190, 0};
+    // Values solved from the reference over two different backgrounds:
+    // the strip is grey at 77 % opacity, the played part grey at 90 %. The
+    // played part leaves the outer row free at the top and the bottom.
+    static const int track[10] = {70, 140, 103, 103, 103, 80, 80, 80, 140, 70};
+    static const int played[10] = {0, 185, 171, 171, 171, 159, 159, 159, 185, 0};
     const int fillW = m_progress >= 0 ? int(r.width() * std::clamp(m_progress, 0.0, 1.0)) : 0;
     for (int y = 0; y < r.height(); ++y) {
         const int row = std::min(9, y * 10 / r.height());
         const bool edge = y == 0 || y == r.height() - 1;
         const int split = edge ? 0 : fillW;
         if (split > 0)
-            p.fillRect(QRect(r.left(), r.top() + y, split, 1), grey(played[row], 195));
-        p.fillRect(QRect(r.left() + split, r.top() + y, r.width() - split, 1), grey(track[row], 128));
+            p.fillRect(QRect(r.left(), r.top() + y, split, 1), grey(played[row], 230));
+        p.fillRect(QRect(r.left() + split, r.top() + y, r.width() - split, 1), grey(track[row], 196));
     }
 
     if (!m_message.isEmpty()) {
@@ -526,8 +542,8 @@ void SkinView::paintAlien(QPainter &p, const QRect &r, bool hover)
 void SkinView::paintBar(QPainter &p)
 {
     p.setRenderHint(QPainter::Antialiasing, false);
-    // The row itself is glass too, slightly see-through.
-    paintGlass(p, m_barRect, kBarGlass, 0, 235);
+    // The row itself is glass too (opaque, like in the reference).
+    paintGlass(p, m_barRect, kBarGlass);
 
     for (const ButtonRect &b : m_buttons) {
         const bool hover = b.id == m_hover;
