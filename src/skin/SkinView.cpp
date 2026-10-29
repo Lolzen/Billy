@@ -29,7 +29,7 @@ constexpr int kSegment = 2;     // spectrum: segment line (1) + gap (1)
 constexpr int kSpectrumH = 42;
 constexpr int kResizeBorder = 5;
 
-const QColor kAlbumColor(0xf3, 0xe7, 0xa1);
+const QColor kAlbumColor(0xff, 0xff, 0xff);
 const QColor kTextColor(0xf4, 0xf4, 0xf4);
 const QColor kLabelColor(0xc8, 0xc8, 0xc8);
 const QColor kLabelHover(0xff, 0xff, 0xff);
@@ -40,15 +40,12 @@ double smoothstep(double a, double b, double x)
     return t * t * (3 - 2 * t);
 }
 
-// Text with a soft shadow, elided to 'width'.
-void shadowText(QPainter &p, int x, int y, int width, const QString &text, const QFont &font, const QColor &color)
+// Text elided to 'width'.
+void elidedText(QPainter &p, int x, int y, int width, const QString &text, const QFont &font, const QColor &color)
 {
     p.setFont(font);
-    const QString elided = QFontMetrics(font).elidedText(text, Qt::ElideRight, width);
-    p.setPen(QColor(0, 0, 0, 150));
-    p.drawText(x + 1, y + 1, elided);
     p.setPen(color);
-    p.drawText(x, y, elided);
+    p.drawText(x, y, QFontMetrics(font).elidedText(text, Qt::ElideRight, width));
 }
 
 // The skin was designed with Trebuchet MS; use it when it is there.
@@ -415,7 +412,7 @@ void SkinView::paintProgress(QPainter &p)
         const QFont f = pixelFont(10);
         const int w = QFontMetrics(f).horizontalAdvance(m_message) + 4;
         const int x = std::max(m_content.left() + 12, m_content.right() - 12 - w);
-        shadowText(p, x, kPanelY + 14, m_content.right() - 12 - x, m_message, f, QColor(255, 255, 255, 220));
+        elidedText(p, x, kPanelY + 14, m_content.right() - 12 - x, m_message, f, QColor(255, 255, 255, 220));
     }
 }
 
@@ -457,20 +454,20 @@ void SkinView::paintInfo(QPainter &p)
     p.setPen(QColor(235, 235, 235, 220));
     p.drawRect(c.adjusted(-1, -1, 0, 0));
 
-    // Text: album 12pt, artist and title 10pt, details 8pt (as in the skin).
+    // Text: album 12pt bold, artist and title 10pt, details 8pt (as in the skin).
     p.setRenderHint(QPainter::TextAntialiasing);
     const int x = m_infoRect.left();
     const int w = m_infoRect.width();
     const int top = kPanelY;
-    shadowText(p, x, top + 39, w, m_info.album, pixelFont(16), kAlbumColor);
-    shadowText(p, x, top + 58, w, m_info.artist, pixelFont(13), kTextColor);
-    shadowText(p, x, top + 78, w, m_info.title, pixelFont(13, false, true), kTextColor);
+    elidedText(p, x, top + 39, w, m_info.album, pixelFont(16, true), kAlbumColor);
+    elidedText(p, x, top + 58, w, m_info.artist, pixelFont(13), kTextColor);
+    elidedText(p, x, top + 78, w, m_info.title, pixelFont(13, false, true), kTextColor);
     int y = top + 117;
     for (const QString &line : m_info.details) {
         if (y > m_spectrumRect.top() - 2)
             break;
         if (!line.isEmpty())
-            shadowText(p, x, y, w, line, pixelFont(11), kTextColor);
+            elidedText(p, x, y, w, line, pixelFont(11), kTextColor);
         y += line.isEmpty() ? 6 : 17;
     }
 }

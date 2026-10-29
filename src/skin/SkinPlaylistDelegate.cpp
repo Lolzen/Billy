@@ -16,7 +16,7 @@ constexpr int kHeaderH = 30;
 constexpr int kCover = 70;
 constexpr int kCoverRows = 4; // rows next to the cover leave room for it
 
-const QColor kAlbum(0xf3, 0xe7, 0xa1);
+const QColor kAlbum(0xff, 0xff, 0xff);
 const QColor kText(240, 240, 240);
 const QColor kDim(185, 185, 185);
 const QColor kTime(150, 185, 205);
@@ -125,7 +125,7 @@ void SkinPlaylistDelegate::paint(QPainter *p, const QStyleOptionViewItem &option
                 artist = up.dirName();
         }
         drawNote(*p, QPointF(h.left() + 6, h.top() + 8), QColor(0x9c, 0xd8, 0xb0));
-        p->setFont(font(13));
+        p->setFont(font(13, true));
         p->setPen(kAlbum);
         p->drawText(QRect(h.left() + 30, h.top() + 2, h.width() - 40, 16), Qt::AlignLeft | Qt::AlignVCenter,
                     p->fontMetrics().elidedText(album, Qt::ElideRight, h.width() - 40));
@@ -179,7 +179,8 @@ void SkinPlaylistDelegate::paint(QPainter *p, const QStyleOptionViewItem &option
     QString title = url ? m_model->displayText(row) : titleOf(QFileInfo(path).completeBaseName());
     if (queuePos > 0)
         title = QStringLiteral("[%1] ").arg(queuePos) + title;
-    p->setFont(font(11, true));
+    // The playing item: white and bold.
+    p->setFont(font(11, playing));
     p->setPen(playing ? kAlbum : queuePos > 0 ? QColor(0x9c, 0xff, 0x9c) : kText);
     const QRect tr(r.left() + 30, r.top(), right - r.left() - 30, r.height());
     p->drawText(tr, Qt::AlignLeft | Qt::AlignVCenter, p->fontMetrics().elidedText(title, Qt::ElideRight, tr.width()));

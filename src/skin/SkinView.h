@@ -19,7 +19,7 @@ public:
 
     struct TrackInfo
     {
-        QString album;    // first line (yellow)
+        QString album;    // first line (white, bold)
         QString artist;
         QString title;    // italic
         QStringList details;
